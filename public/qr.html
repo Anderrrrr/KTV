@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#14111b">
+  <title>KTV 加入點歌</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/qr-display.css">
+</head>
+<body>
+  <main class="display-shell">
+    <div class="brand"><span>♫</span> KTV 點歌機</div>
+    <section class="join-card">
+      <p class="kicker">JOIN THE PARTY</p>
+      <h1>掃描 QR Code<br>一起來點歌</h1>
+      <div id="displayQr" class="display-qr" aria-label="手機點歌 QR Code"></div>
+      <p class="hint">手機與主機需連接同一個 Wi-Fi</p>
+      <div id="displayUrl" class="display-url">正在取得點歌網址…</div>
+    </section>
+    <section class="now-strip">
+      <span>正在播放</span>
+      <strong id="displayNow">準備開始</strong>
+    </section>
+    <button id="fullscreenButton" class="fullscreen-button" type="button">全螢幕顯示</button>
+    <p id="displayError" class="display-error" hidden></p>
+  </main>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
+  <script src="/qr-display.js" defer></script>
+</body>
+</html>

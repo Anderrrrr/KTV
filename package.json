@@ -1,0 +1,16 @@
+{
+  "name": "ktv-song-machine",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "export:songs": "node scripts/export-song-seed.mjs",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=22.5.0" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Anderrrrr/KTV.git"
+  }
+}

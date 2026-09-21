@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#181520">
+  <meta name="description" content="一起點歌、排歌、插播，開始你的 KTV 夜晚。">
+  <title>KTV 點歌機</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">♫</span><span>KTV <b>點歌機</b></span></div>
+      <div id="roleBadge" class="role-badge">連線中</div>
+    </header>
+
+    <main id="app" class="layout" hidden>
+      <section class="main-column">
+        <div class="section-kicker"><span class="live-dot"></span> LIVE SESSION</div>
+        <section class="now-card" aria-labelledby="nowTitle">
+          <div class="now-head"><span>正在播放</span><span class="sound-bars"><i></i><i></i><i></i><i></i></span></div>
+          <div id="nowContent" class="now-content"></div>
+          <div id="playerWrap" class="player-wrap" hidden><div id="player"></div></div>
+          <button id="nextButton" class="skip-button" type="button">下一首 <span>→</span></button>
+        </section>
+
+        <section class="queue-section" aria-labelledby="queueTitle">
+          <div class="section-heading"><div><span class="eyebrow">UP NEXT</span><h2 id="queueTitle">接下來唱</h2></div><span id="queueCount" class="count">0 首</span></div>
+          <div id="queueList" class="queue-list"></div>
+        </section>
+      </section>
+
+      <aside class="side-column">
+        <section id="inviteCard" class="invite-card" hidden>
+          <div class="eyebrow">INVITE YOUR FRIENDS</div>
+          <h2>一起來點歌</h2>
+          <p>讓朋友掃描 QR code，加入這場 KTV。</p>
+          <div id="qrCode" class="qr-code"></div>
+          <div class="invite-link"><input id="inviteUrl" readonly aria-label="手機點歌連結"><button id="copyButton" type="button">複製</button></div>
+          <button id="openQrButton" class="open-qr-button" type="button">在副螢幕開啟 QR Code ↗</button>
+          <p class="network-hint">手機必須和這台電腦連接同一個 Wi-Fi。掃不開時，可在手機瀏覽器手動輸入上方網址。</p>
+        </section>
+
+        <section class="song-card" aria-labelledby="addTitle">
+          <div class="eyebrow">REQUEST A SONG</div>
+          <h2 id="addTitle">點一首歌</h2>
+          <p class="helper">先找找大家唱過的歌，找不到再貼上 YouTube 連結。</p>
+          <label for="nameInput">你的名字 <span class="optional">選填</span></label>
+          <input id="nameInput" type="text" maxlength="40" placeholder="例如：小明" autocomplete="nickname">
+          <label for="searchInput">搜尋歌名</label>
+          <div class="search-wrap"><span>⌕</span><input id="searchInput" type="search" maxlength="100" placeholder="想唱什麼歌？" autocomplete="off"></div>
+          <div id="searchResults" class="search-results"></div>
+          <section id="catalogPanel" class="catalog-panel" hidden aria-labelledby="catalogTitle">
+            <div class="catalog-heading">
+              <div><span class="eyebrow">SONG BOOK</span><h3 id="catalogTitle">所有歌曲</h3></div>
+              <button id="catalogAddButton" class="small-button" type="button">＋ 新增歌曲</button>
+            </div>
+            <input id="catalogFilter" type="search" placeholder="篩選所有歌曲" autocomplete="off">
+            <div id="catalogCount" class="catalog-count"></div>
+            <div id="catalogGrid" class="catalog-grid"></div>
+          </section>
+          <div id="newSong" class="new-song" hidden>
+            <div class="new-song-title">新增歌曲</div>
+            <p id="unknownMessage">歌庫裡還沒有這首歌，貼上連結讓大家以後也能點。</p>
+            <label for="newTitle">歌名</label>
+            <input id="newTitle" type="text" maxlength="120" placeholder="歌曲名稱">
+            <label for="newUrl">YouTube 連結</label>
+            <input id="newUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." inputmode="url">
+            <div class="form-actions"><button id="cancelNew" class="text-button" type="button">取消</button><button id="saveSong" class="primary-button" type="button">新增並點歌</button></div>
+          </div>
+        </section>
+      </aside>
+    </main>
+    <div id="errorScreen" class="error-screen" hidden><div class="error-icon">♪</div><h1>無法加入點歌房間</h1><p id="errorText"></p></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
+  <script src="/app.js" defer></script>
+</body>
+</html>
