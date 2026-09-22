@@ -1,0 +1,67 @@
+name: macOS smoke test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    name: Node.js ${{ matrix.node }}
+    runs-on: macos-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        node: [22, 24]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Verify macOS launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x start-ktv.command
+          sh -n start-ktv.command
+
+      - name: Start KTV and verify HTTP response
+        shell: bash
+        env:
+          KTV_NO_BROWSER: "1"
+          PORT: "3100"
+        run: |
+          set -euo pipefail
+          ./start-ktv.command >server.log 2>&1 &
+          launcher_pid=$!
+
+          cleanup() {
+            pkill -TERM -P "$launcher_pid" 2>/dev/null || true
+            kill "$launcher_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for attempt in {1..15}; do
+            if curl --fail --silent --show-error http://127.0.0.1:3100/ >/dev/null; then
+              cat server.log
+              exit 0
+            fi
+            if ! kill -0 "$launcher_pid" 2>/dev/null; then
+              cat server.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          cat server.log
+          echo "KTV did not answer within 15 seconds."
+          exit 1

@@ -11,7 +11,7 @@ if not defined NODE_EXE if exist "%USERPROFILE%\.cache\codex-runtimes\codex-prim
 if not defined NODE_EXE (
   echo.
   echo [ERROR] Node.js was not found.
-  echo Please install Node.js 22 or newer from https://nodejs.org/
+  echo Please install Node.js 22.13 or newer from https://nodejs.org/
   echo Then run this file again.
   echo.
   pause

@@ -18,7 +18,7 @@
 ## 系統需求
 
 - Windows、macOS 或 Linux
-- [Node.js 22.5 或更新版本](https://nodejs.org/)
+- [Node.js 22.13 或更新版本](https://nodejs.org/)
 - 主機與手機連接同一個區域網路
 - 可連線到 YouTube
 
@@ -30,7 +30,7 @@
 
 雙擊 `start-ktv.cmd`。
 
-如果出現「node 不是內部或外部命令」，請先安裝 Node.js 22 或更新版本，再重新開啟 `start-ktv.cmd`。
+如果出現「node 不是內部或外部命令」，請先安裝 Node.js 22.13 或更新版本，再重新開啟 `start-ktv.cmd`。
 
 第一次把 Windows 電腦當作區網主機時，請在專案資料夾執行：
 
@@ -50,7 +50,7 @@ powershell -ExecutionPolicy Bypass -File .\setup-windows-server.ps1
 chmod +x start-ktv.command
 ```
 
-如果顯示找不到 Node.js，請先安裝 Node.js 22 或更新版本，再重新開啟 `start-ktv.command`。macOS 第一次詢問是否允許 Node.js 接收連入連線時，請選擇「允許」，手機才能連上點歌頁面。
+啟動器會自動開啟瀏覽器。如果顯示找不到 Node.js 或 SQLite 不受支援，請先安裝 Node.js 22.13 或更新版本，再重新開啟 `start-ktv.command`。macOS 第一次詢問是否允許 Node.js 接收連入連線時，請選擇「允許」，手機才能連上點歌頁面。
 
 ### 終端機
 
