@@ -40,6 +40,18 @@ powershell -ExecutionPolicy Bypass -File .\setup-windows-server.ps1
 
 腳本會要求系統管理員權限，並建立僅適用於私人網路的 TCP 3000 入站規則。如果目前連接的是公用網路，腳本會先詢問是否將該可信任網路改為私人網路。請勿在咖啡廳、機場等公共 Wi-Fi 上進行這項變更。
 
+### macOS
+
+雙擊 `start-ktv.command`。
+
+如果 macOS 第一次執行時顯示檔案沒有執行權限，請在專案資料夾開啟「終端機」並執行一次：
+
+```bash
+chmod +x start-ktv.command
+```
+
+如果顯示找不到 Node.js，請先安裝 Node.js 22 或更新版本，再重新開啟 `start-ktv.command`。macOS 第一次詢問是否允許 Node.js 接收連入連線時，請選擇「允許」，手機才能連上點歌頁面。
+
 ### 終端機
 
 ```bash
@@ -113,6 +125,7 @@ KTV/
 ├─ server.js               HTTP API、SQLite 與靜態檔案伺服器
 ├─ setup-windows-server.ps1 Windows 主機網路與防火牆設定
 ├─ start-ktv.cmd           Windows 雙擊啟動器
+├─ start-ktv.command       macOS 雙擊啟動器
 └─ package.json
 ```
 
