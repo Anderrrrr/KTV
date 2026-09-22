@@ -31,6 +31,14 @@
 
 如果出現「node 不是內部或外部命令」，請先安裝 Node.js 22 或更新版本，再重新開啟 `start-ktv.cmd`。
 
+第一次把 Windows 電腦當作區網主機時，請在專案資料夾執行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-windows-server.ps1
+```
+
+腳本會要求系統管理員權限，並建立僅適用於私人網路的 TCP 3000 入站規則。如果目前連接的是公用網路，腳本會先詢問是否將該可信任網路改為私人網路。請勿在咖啡廳、機場等公共 Wi-Fi 上進行這項變更。
+
 ### 終端機
 
 ```bash
@@ -102,6 +110,7 @@ KTV/
 ├─ seed/songs.json         首次啟動用的歌曲與 YouTube 連結
 ├─ data/                   本機 SQLite 資料庫，不提交內容
 ├─ server.js               HTTP API、SQLite 與靜態檔案伺服器
+├─ setup-windows-server.ps1 Windows 主機網路與防火牆設定
 ├─ start-ktv.cmd           Windows 雙擊啟動器
 └─ package.json
 ```
