@@ -139,6 +139,78 @@ function clientAddress() {
   return `http://localhost:${port}`;
 }
 const port = Number(process.env.PORT || 3000);
+const youtubeSearchCache = new Map();
+
+function jsonObjectAfter(text, marker) {
+  const markerIndex = text.indexOf(marker);
+  if (markerIndex < 0) return null;
+  const start = text.indexOf('{', markerIndex + marker.length);
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === '{') depth += 1;
+    else if (character === '}' && --depth === 0) return JSON.parse(text.slice(start, index + 1));
+  }
+  return null;
+}
+
+function collectYouTubeVideos(value, results, foundIds) {
+  if (!value || results.length >= 5) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectYouTubeVideos(item, results, foundIds);
+    return;
+  }
+  if (typeof value !== 'object') return;
+  const video = value.videoRenderer;
+  if (video && /^[A-Za-z0-9_-]{11}$/.test(video.videoId || '') && !foundIds.has(video.videoId)) {
+    const title = video.title?.runs?.map(run => run.text).join('') || video.title?.simpleText || '';
+    if (title) {
+      foundIds.add(video.videoId);
+      results.push({
+        title,
+        channel: video.ownerText?.runs?.map(run => run.text).join('') || '',
+        videoId: video.videoId,
+        youtubeUrl: `https://www.youtube.com/watch?v=${video.videoId}`,
+        thumbnailUrl: `https://i.ytimg.com/vi/${video.videoId}/mqdefault.jpg`
+      });
+    }
+  }
+  for (const child of Object.values(value)) collectYouTubeVideos(child, results, foundIds);
+}
+
+export async function searchYouTube(query) {
+  const cacheKey = query.toLocaleLowerCase('zh-Hant');
+  const cached = youtubeSearchCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.results;
+  const response = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+      'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.7'
+    },
+    signal: AbortSignal.timeout(10_000)
+  });
+  if (!response.ok) throw new Error('YouTube 搜尋暫時無法使用');
+  const html = await response.text();
+  const initialData = jsonObjectAfter(html, 'var ytInitialData =')
+    || jsonObjectAfter(html, 'ytInitialData =');
+  if (!initialData) throw new Error('無法讀取 YouTube 搜尋結果');
+  const results = [];
+  collectYouTubeVideos(initialData, results, new Set());
+  youtubeSearchCache.set(cacheKey, { results, expiresAt: Date.now() + 10 * 60_000 });
+  if (youtubeSearchCache.size > 100) youtubeSearchCache.delete(youtubeSearchCache.keys().next().value);
+  return results;
+}
+
 const files = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/qr.html': ['qr.html', 'text/html; charset=utf-8'],
@@ -186,6 +258,10 @@ export const server = http.createServer(async (req, res) => {
           .all(`%${query.replace(/[\\%_]/g, '\\$&')}%`)
         : db.prepare('SELECT id,title,youtube_url,video_id FROM seen ORDER BY id DESC LIMIT 30').all();
       json(res, 200, { songs: rows });
+    } else if (req.method === 'GET' && url.pathname === '/api/youtube-search') {
+      const query = (url.searchParams.get('q') || '').trim().slice(0, 100);
+      if (!query) { json(res, 400, { error: '請輸入要搜尋的歌名' }); return; }
+      json(res, 200, { results: await searchYouTube(query) });
     } else if (req.method === 'POST' && url.pathname === '/api/seen') {
       const data = await body(req);
       const title = String(data.title || '').trim().slice(0, 120);

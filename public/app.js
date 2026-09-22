@@ -125,7 +125,7 @@ async function search() {
     const { songs } = await api(`/api/seen?q=${encodeURIComponent(query)}`);
     if (serial !== searchSerial) return;
     area.replaceChildren();
-    if (!songs.length) area.append(el('div', 'search-empty', `找不到「${query}」，可以新增這首歌的連結。`));
+    if (songs.length) area.append(el('div', 'search-section-title', '曾經收錄的歌曲'));
     for (const song of songs) {
       const result = el('div', 'result');
       const copy = el('div', 'result-copy');
@@ -134,7 +134,55 @@ async function search() {
       actions.append(button('點歌', '', () => queueSong(song.id, 'end')), button('插播', '', () => queueSong(song.id, 'next')));
       result.append(copy, actions); area.append(result);
     }
-    area.append(button(`＋ 新增「${query}」的 YouTube 連結`, 'new-button', openNewSong));
+    if (!songs.length) await renderYouTubeResults(query, serial, area);
+    if (serial === searchSerial) area.append(button(`＋ 手動貼上「${query}」的 YouTube 連結`, 'new-button', openNewSong));
+  } catch (error) { toast(error.message); }
+}
+
+async function renderYouTubeResults(query, serial, area) {
+  const loading = el('div', 'search-empty', `歌庫裡找不到「${query}」，正在搜尋 YouTube…`);
+  area.append(loading);
+  try {
+    const { results } = await api(`/api/youtube-search?q=${encodeURIComponent(query)}`);
+    if (serial !== searchSerial) return;
+    loading.remove();
+    area.append(el('div', 'search-section-title', 'YouTube 搜尋結果'));
+    if (!results.length) area.append(el('div', 'search-empty', 'YouTube 也找不到相關影片，可以手動貼上連結。'));
+    for (const result of results) {
+      const row = el('article', 'youtube-result');
+      const image = el('img', 'youtube-result-image');
+      image.src = result.thumbnailUrl;
+      image.alt = `${result.title} 的 YouTube 封面`;
+      image.loading = 'lazy';
+      image.referrerPolicy = 'no-referrer';
+      const content = el('div', 'youtube-result-content');
+      content.append(el('div', 'youtube-result-title', result.title));
+      if (result.channel) content.append(el('div', 'youtube-result-channel', result.channel));
+      const actions = el('div', 'youtube-result-actions');
+      actions.append(
+        button('新增並點歌', 'catalog-primary', () => addYouTubeResult(result, 'end')),
+        button('新增並插播', 'catalog-secondary', () => addYouTubeResult(result, 'next'))
+      );
+      content.append(actions);
+      row.append(image, content);
+      area.append(row);
+    }
+  } catch (error) {
+    if (serial !== searchSerial) return;
+    loading.textContent = `${error.message}，仍可手動貼上連結。`;
+  }
+}
+
+async function addYouTubeResult(result, mode) {
+  try {
+    await api('/api/seen', {
+      method: 'POST',
+      body: JSON.stringify({ title: result.title, youtubeUrl: result.youtubeUrl, mode, name: name() })
+    });
+    catalogLoaded = false;
+    if (role === 'client') loadCatalog(true);
+    await refresh();
+    toast(mode === 'next' ? '新歌已收錄並插播' : '新歌已收錄並加入歌單');
   } catch (error) { toast(error.message); }
 }
 function name() { return $('nameInput').value.trim() || '訪客'; }
@@ -202,7 +250,7 @@ function showError(message) { $('app').hidden = true; $('errorScreen').hidden = 
 
 $('nameInput').value = localStorage.getItem('ktv-name') || '';
 $('nameInput').addEventListener('input', () => localStorage.setItem('ktv-name', $('nameInput').value));
-$('searchInput').addEventListener('input', () => { clearTimeout(window.searchTimer); window.searchTimer = setTimeout(search, 180); });
+$('searchInput').addEventListener('input', () => { clearTimeout(window.searchTimer); window.searchTimer = setTimeout(search, 450); });
 $('catalogFilter').addEventListener('input', renderCatalog);
 $('catalogAddButton').addEventListener('click', () => { $('searchInput').value = ''; openNewSong(); });
 $('cancelNew').addEventListener('click', () => { $('newSong').hidden = true; });
