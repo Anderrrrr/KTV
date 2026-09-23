@@ -126,9 +126,16 @@ KTV/
 ├─ setup-windows-server.ps1 Windows 主機網路與防火牆設定
 ├─ start-ktv.cmd           Windows 雙擊啟動器
 ├─ start-ktv.command       macOS 雙擊啟動器
+├─ LICENSE                 非商業授權條款
 └─ package.json
 ```
 
 ## 資料備份
 
 停止伺服器後，複製 `data/ktv.sqlite` 即可完整備份曲庫與歌單。還原時將檔案放回相同位置再啟動伺服器。
+
+## 授權
+
+Copyright © 2026 Anderrrrr. All rights reserved.
+
+本專案僅授權用於個人、教育及其他非商業用途；未經著作權人事先書面許可，不得用於任何商業用途。完整條款請參閱 [LICENSE](LICENSE)。
