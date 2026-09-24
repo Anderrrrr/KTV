@@ -28,7 +28,15 @@ CREATE TABLE IF NOT EXISTS queue (
   added_by TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS queue_active ON queue(status,sort_order);`);
+CREATE INDEX IF NOT EXISTS queue_active ON queue(status,sort_order);
+CREATE TABLE IF NOT EXISTS lyrics (
+  seen_id INTEGER PRIMARY KEY REFERENCES seen(id),
+  lrclib_id INTEGER,
+  track TEXT,
+  synced TEXT,
+  offset_ms INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`);
 
 function seedSongsWhenEmpty() {
   const count = db.prepare('SELECT COUNT(*) AS count FROM seen').get().count;
@@ -211,6 +219,69 @@ export async function searchYouTube(query) {
   return results;
 }
 
+export function lyricsQueries(title) {
+  const queries = [];
+  const add = value => {
+    const cleaned = value
+      .replace(/[－—–-]\s*(原唱|純伴奏|伴奏|KTV|卡拉OK).*$/i, '')
+      .replace(/[（(\[].*?[)）\]]/g, ' ')
+      .replace(/\b(official|music|video|mv|lyrics?|hd|4k|ktv)\b/gi, ' ')
+      .replace(/(官方|完整版|高畫質|歌詞版|動態歌詞|中文字幕)/g, ' ')
+      .replace(/[|｜/]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleaned && !queries.includes(cleaned)) queries.push(cleaned);
+  };
+  for (const match of title.matchAll(/[【《「](.+?)[】》」]/g)) add(match[1]);
+  add(title.replace(/[【《「].*?[】》」]/g, ' '));
+  add(title);
+  return queries.slice(0, 3);
+}
+
+async function lyricsCandidates(title, duration) {
+  for (const query of lyricsQueries(title)) {
+    const response = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`, {
+      headers: { 'User-Agent': 'KTV-Jukebox/1.0 (LAN karaoke)' },
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (!response.ok) throw new Error('歌詞服務暫時無法使用');
+    const found = (await response.json()).filter(item => item.syncedLyrics && !item.instrumental);
+    if (!found.length) continue;
+    // Seed titles have no artist, so covers compete with the original. The original artist
+    // usually has many uploads (albums, re-releases), so artist frequency is a useful signal
+    // alongside the video length.
+    const artist = item => String(item.artistName || '').replace(/[（(].*?[)）]/g, '').trim().toLowerCase();
+    const counts = new Map();
+    for (const item of found) counts.set(artist(item), (counts.get(artist(item)) || 0) + 1);
+    const score = item => (item.trackName === query ? 0 : 30)
+      + (duration > 0 ? Math.min(Math.abs(item.duration - duration), 60) : 0)
+      - 5 * Math.min(counts.get(artist(item)), 5);
+    return found.sort((a, b) => score(a) - score(b));
+  }
+  return [];
+}
+
+function lyricsRow(seenId) {
+  return db.prepare('SELECT lrclib_id, track, synced, offset_ms FROM lyrics WHERE seen_id=?').get(seenId);
+}
+
+async function findLyrics(seenId, { duration = 0, query = '', skipCurrent = false } = {}) {
+  const song = db.prepare('SELECT title FROM seen WHERE id=?').get(seenId);
+  if (!song) return null;
+  const existing = lyricsRow(seenId);
+  const candidates = await lyricsCandidates(query || song.title, duration);
+  let pick = candidates[0];
+  if (skipCurrent && existing?.lrclib_id && !query) {
+    const index = candidates.findIndex(item => item.id === existing.lrclib_id);
+    pick = candidates[(index + 1) % candidates.length];
+  }
+  db.prepare(`INSERT INTO lyrics(seen_id,lrclib_id,track,synced,offset_ms) VALUES(?,?,?,?,?)
+      ON CONFLICT(seen_id) DO UPDATE SET lrclib_id=excluded.lrclib_id, track=excluded.track,
+      synced=excluded.synced, updated_at=CURRENT_TIMESTAMP`)
+    .run(seenId, pick?.id ?? null, pick ? `${pick.trackName} - ${pick.artistName}` : null, pick?.syncedLyrics ?? null, existing?.offset_ms ?? 0);
+  return lyricsRow(seenId);
+}
+
 const files = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/qr.html': ['qr.html', 'text/html; charset=utf-8'],
@@ -289,6 +360,28 @@ export const server = http.createServer(async (req, res) => {
       const row = db.prepare("UPDATE queue SET sort_order=? WHERE id=? AND status='pending'").run(first, id);
       if (!row.changes) { json(res, 404, { error: '這首歌已不在待播清單' }); return; }
       json(res, 200, state());
+    } else if (req.method === 'GET' && /^\/api\/lyrics\/\d+$/.test(url.pathname)) {
+      const seenId = Number(url.pathname.split('/').pop());
+      const row = lyricsRow(seenId) ?? await findLyrics(seenId, { duration: Number(url.searchParams.get('duration')) || 0 });
+      if (!row) { json(res, 404, { error: '找不到這首歌' }); return; }
+      json(res, 200, row);
+    } else if (req.method === 'POST' && /^\/api\/lyrics\/\d+\/search$/.test(url.pathname)) {
+      if (!isAdmin) { json(res, 403, { error: '只有主機可以更換歌詞' }); return; }
+      const data = await body(req);
+      const row = await findLyrics(Number(url.pathname.split('/')[3]), {
+        duration: Number(data.duration) || 0,
+        query: String(data.query || '').trim().slice(0, 100),
+        skipCurrent: true
+      });
+      if (!row) { json(res, 404, { error: '找不到這首歌' }); return; }
+      json(res, 200, row);
+    } else if (req.method === 'PATCH' && /^\/api\/lyrics\/\d+$/.test(url.pathname)) {
+      if (!isAdmin) { json(res, 403, { error: '只有主機可以調整歌詞' }); return; }
+      const data = await body(req);
+      const offset = Math.max(-60_000, Math.min(60_000, Math.round(Number(data.offsetMs) || 0)));
+      const row = db.prepare('UPDATE lyrics SET offset_ms=? WHERE seen_id=?').run(offset, Number(url.pathname.split('/').pop()));
+      if (!row.changes) { json(res, 404, { error: '這首歌還沒有歌詞' }); return; }
+      json(res, 200, { offset_ms: offset });
     } else if (req.method === 'POST' && url.pathname === '/api/next') {
       advance(); json(res, 200, state());
     } else { json(res, 404, { error: '找不到功能' }); }

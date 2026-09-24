@@ -22,7 +22,26 @@
         <section class="now-card" aria-labelledby="nowTitle">
           <div class="now-head"><span>正在播放</span><span class="sound-bars"><i></i><i></i><i></i><i></i></span></div>
           <div id="nowContent" class="now-content"></div>
-          <div id="playerWrap" class="player-wrap" hidden><div id="player"></div></div>
+          <div id="playerWrap" class="player-wrap" hidden>
+            <div id="player"></div>
+            <div id="lyricsOverlay" class="lyrics-overlay" hidden aria-live="off">
+              <div class="lyric-line"><span class="lyric-base"></span><span class="lyric-fill" aria-hidden="true"></span></div>
+              <div class="lyric-line"><span class="lyric-base"></span><span class="lyric-fill" aria-hidden="true"></span></div>
+            </div>
+          </div>
+          <div id="lyricsBar" class="lyrics-bar" hidden>
+            <button id="lyricsToggle" class="small-button" type="button">字幕：開</button>
+            <button id="lyricsEarlier" class="small-button" type="button" title="字幕比歌聲晚時按這裡">字幕提早 0.5s</button>
+            <span id="lyricsOffset" class="lyrics-offset">±0.0s</span>
+            <button id="lyricsLater" class="small-button" type="button" title="字幕比歌聲早時按這裡">字幕延後 0.5s</button>
+            <button id="lyricsSwap" class="small-button" type="button">換一份歌詞</button>
+            <button id="lyricsFullscreen" class="small-button" type="button">全螢幕 ⛶</button>
+            <form id="lyricsSearchForm" class="lyrics-search">
+              <input id="lyricsQuery" type="search" maxlength="100" placeholder="歌詞對不上？輸入「歌名 歌手」再搜尋" autocomplete="off">
+              <button class="small-button" type="submit">搜尋歌詞</button>
+            </form>
+            <div id="lyricsStatus" class="lyrics-status"></div>
+          </div>
           <button id="nextButton" class="skip-button" type="button">下一首 <span>→</span></button>
         </section>
 

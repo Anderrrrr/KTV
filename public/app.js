@@ -47,7 +47,7 @@ function renderNow(song) {
   } else {
     area.append(el('div', 'now-title', song.title), el('div', 'now-sub', `由 ${song.added_by} 點播`));
   }
-  if (role === 'admin') syncPlayer(song?.video_id || null);
+  if (role === 'admin') { syncPlayer(song?.video_id || null); syncLyrics(song?.seen_id || null); }
 }
 function renderQueue(songs) {
   $('queueCount').textContent = `${songs.length} 首`;
@@ -109,13 +109,180 @@ function loadPlayer() {
 window.onYouTubeIframeAPIReady = () => {
   player = new YT.Player('player', {
     videoId: renderedVideoId,
-    playerVars: { autoplay: 1, rel: 0 },
+    // fs:0 hides YouTube's own fullscreen button, which would hide the lyrics overlay.
+    playerVars: { autoplay: 1, rel: 0, fs: 0, iv_load_policy: 3 },
     events: {
       onReady: event => { playerReady = true; if (renderedVideoId) event.target.loadVideoById(renderedVideoId); },
-      onStateChange: event => { if (event.data === YT.PlayerState.ENDED) action('/api/next', { method: 'POST' }); }
+      onStateChange: event => {
+        loadLyrics();
+        if (event.data === YT.PlayerState.ENDED) action('/api/next', { method: 'POST' });
+      }
     }
   });
 };
+
+// ---- Karaoke lyrics ----
+// Lyrics come from LRCLIB as line-timed LRC. Each line fills left to right over its duration,
+// shown on two alternating rows like a KTV screen.
+const lyrics = { seenId: null, requested: false, retryAt: 0, lines: [], offsetMs: 0, saveTimer: null };
+let lyricsEnabled = localStorage.getItem('ktv-lyrics') !== 'off';
+let lyricsFrame = null;
+let clock = { reported: -1, at: 0, shown: 0 };
+const slots = [...document.querySelectorAll('#lyricsOverlay .lyric-line')].map(line => ({
+  line, base: line.querySelector('.lyric-base'), fill: line.querySelector('.lyric-fill'), text: null
+}));
+
+function parseLrc(text) {
+  const stamps = [];
+  for (const raw of (text || '').split(/\r?\n/)) {
+    const times = [...raw.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
+    const content = raw.replace(/\[[^\]]*\]/g, '').trim();
+    for (const [, min, sec] of times) stamps.push({ start: (Number(min) * 60 + Number(sec)) * 1000, text: content });
+  }
+  stamps.sort((a, b) => a.start - b.start);
+  const lines = [];
+  stamps.forEach((stamp, index) => {
+    if (!stamp.text) return;
+    const nextStart = stamps[index + 1]?.start ?? stamp.start + 6000;
+    // Before an instrumental break the next timestamp is far away; don't stretch the fill across it.
+    const sung = Math.max(2500, [...stamp.text.replace(/\s/g, '')].length * 450);
+    lines.push({ start: stamp.start, end: Math.min(nextStart, stamp.start + sung), text: stamp.text });
+  });
+  return lines;
+}
+
+function syncLyrics(seenId) {
+  $('lyricsBar').hidden = !seenId;
+  if (seenId !== lyrics.seenId) {
+    Object.assign(lyrics, { seenId, requested: false, retryAt: 0, lines: [], offsetMs: 0 });
+    $('lyricsQuery').value = '';
+    renderLyricsMeta('');
+    updateLyricsVisibility();
+  }
+  // Also retried on every state poll until the player knows the video length.
+  loadLyrics();
+}
+function playingDuration() {
+  // Only trust the duration once the player has switched to the current video.
+  return playerReady && player.getVideoData()?.video_id === renderedVideoId ? Math.round(player.getDuration() || 0) : 0;
+}
+async function loadLyrics() {
+  if (!lyrics.seenId || lyrics.requested || Date.now() < lyrics.retryAt || !playingDuration()) return;
+  lyrics.requested = true;
+  const seenId = lyrics.seenId;
+  renderLyricsMeta('正在尋找歌詞…');
+  try {
+    applyLyrics(seenId, await api(`/api/lyrics/${seenId}?duration=${playingDuration()}`));
+  } catch (error) {
+    if (seenId === lyrics.seenId) { lyrics.requested = false; lyrics.retryAt = Date.now() + 30_000; renderLyricsMeta(error.message); }
+  }
+}
+async function searchLyrics(query) {
+  const seenId = lyrics.seenId;
+  if (!seenId) return;
+  renderLyricsMeta('正在尋找歌詞…');
+  try {
+    applyLyrics(seenId, await api(`/api/lyrics/${seenId}/search`, { method: 'POST', body: JSON.stringify({ query, duration: playingDuration() }) }));
+  } catch (error) { renderLyricsMeta(error.message); }
+}
+function applyLyrics(seenId, row) {
+  if (seenId !== lyrics.seenId) return;
+  lyrics.requested = true;
+  lyrics.lines = parseLrc(row.synced);
+  lyrics.offsetMs = row.offset_ms || 0;
+  slots.forEach(slot => { slot.text = null; });
+  renderLyricsMeta(lyrics.lines.length ? `歌詞：${row.track}（LRCLIB）` : '找不到同步歌詞，可以輸入「歌名 歌手」再搜尋。');
+  updateLyricsVisibility();
+}
+function renderLyricsMeta(status) {
+  $('lyricsStatus').textContent = status;
+  $('lyricsToggle').textContent = `字幕：${lyricsEnabled ? '開' : '關'}`;
+  const seconds = lyrics.offsetMs / 1000;
+  $('lyricsOffset').textContent = seconds === 0 ? '±0.0s' : `${seconds > 0 ? '+' : ''}${seconds.toFixed(1)}s`;
+}
+function updateLyricsVisibility() {
+  const show = lyricsEnabled && lyrics.lines.length > 0;
+  $('lyricsOverlay').hidden = !show;
+  if (show && !lyricsFrame) lyricsFrame = requestAnimationFrame(drawLyrics);
+}
+function nudgeOffset(deltaMs) {
+  if (!lyrics.lines.length) return;
+  lyrics.offsetMs += deltaMs;
+  renderLyricsMeta($('lyricsStatus').textContent);
+  clearTimeout(lyrics.saveTimer);
+  const seenId = lyrics.seenId;
+  const offsetMs = lyrics.offsetMs;
+  lyrics.saveTimer = setTimeout(() => api(`/api/lyrics/${seenId}`, { method: 'PATCH', body: JSON.stringify({ offsetMs }) }).catch(error => toast(error.message)), 600);
+}
+function videoMs() {
+  // The iframe API only reports the time a few times per second; extrapolate between reports
+  // so the colour moves smoothly.
+  const reported = (player.getCurrentTime() || 0) * 1000;
+  const now = performance.now();
+  if (reported !== clock.reported) clock = { ...clock, reported, at: now };
+  let estimate = reported;
+  if (player.getPlayerState() === YT.PlayerState.PLAYING) estimate += Math.min(now - clock.at, 1000);
+  if (estimate < clock.shown && clock.shown - estimate < 300) estimate = clock.shown;
+  clock.shown = estimate;
+  return estimate;
+}
+function setSlot(slot, line, progress) {
+  const text = line?.text ?? '';
+  if (slot.text !== text) {
+    slot.text = text;
+    slot.base.textContent = text;
+    slot.fill.textContent = text;
+    slot.line.style.fontSize = '';
+    const room = $('lyricsOverlay').clientWidth * 0.94;
+    const width = slot.line.scrollWidth;
+    if (width > room) slot.line.style.fontSize = `${parseFloat(getComputedStyle(slot.line).fontSize) * room / width}px`;
+  }
+  slot.fill.style.width = `${Math.round(progress * 1000) / 10}%`;
+}
+function drawLyrics() {
+  lyricsFrame = null;
+  if ($('lyricsOverlay').hidden || !playerReady) return;
+  const t = videoMs() - lyrics.offsetMs;
+  const lines = lyrics.lines;
+  let current = -1;
+  while (current + 1 < lines.length && lines[current + 1].start <= t) current += 1;
+  if (current < 0) {
+    setSlot(slots[0], lines[0], 0);
+    setSlot(slots[1], lines[1], 0);
+  } else {
+    const line = lines[current];
+    const next = lines[current + 1];
+    const inBreak = t > line.end + 3000 && (!next || next.start - t > 5000);
+    setSlot(slots[current % 2], inBreak ? null : line, Math.min(1, Math.max(0, (t - line.start) / (line.end - line.start))));
+    setSlot(slots[(current + 1) % 2], next, 0);
+  }
+  lyricsFrame = requestAnimationFrame(drawLyrics);
+}
+function toggleFullscreen() {
+  const wrap = $('playerWrap');
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  } else {
+    Promise.resolve((wrap.requestFullscreen || wrap.webkitRequestFullscreen).call(wrap)).catch(() => toast('瀏覽器不允許全螢幕'));
+  }
+}
+function onFullscreenChange() {
+  slots.forEach(slot => { slot.text = null; });
+  $('lyricsFullscreen').textContent = document.fullscreenElement || document.webkitFullscreenElement ? '離開全螢幕' : '全螢幕 ⛶';
+}
+$('lyricsToggle').addEventListener('click', () => {
+  lyricsEnabled = !lyricsEnabled;
+  localStorage.setItem('ktv-lyrics', lyricsEnabled ? 'on' : 'off');
+  renderLyricsMeta($('lyricsStatus').textContent);
+  updateLyricsVisibility();
+});
+$('lyricsEarlier').addEventListener('click', () => nudgeOffset(-500));
+$('lyricsLater').addEventListener('click', () => nudgeOffset(500));
+$('lyricsSwap').addEventListener('click', () => searchLyrics(''));
+$('lyricsSearchForm').addEventListener('submit', event => { event.preventDefault(); searchLyrics($('lyricsQuery').value.trim()); });
+$('lyricsFullscreen').addEventListener('click', toggleFullscreen);
+document.addEventListener('fullscreenchange', onFullscreenChange);
+document.addEventListener('webkitfullscreenchange', onFullscreenChange);
 async function search() {
   const query = $('searchInput').value.trim();
   const serial = ++searchSerial;
