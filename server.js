@@ -302,6 +302,31 @@ export async function fetchYouTubePlaylist(listId, limit = 300) {
   };
 }
 
+export function spotifyListRef(input) {
+  const match = String(input).match(/open\.spotify\.com\/(?:intl-[a-z-]+\/)?(?:embed\/)?(playlist|album)\/([A-Za-z0-9]{22})/i)
+    || String(input).match(/spotify:(playlist|album):([A-Za-z0-9]{22})/i);
+  return match ? { type: match[1].toLowerCase(), id: match[2] } : null;
+}
+
+// Spotify's embed player page carries the track list without needing an API key.
+// It lists at most 100 tracks and has no total count.
+export async function fetchSpotifyList({ type, id }) {
+  const response = await fetch(`https://open.spotify.com/embed/${type}/${id}`, {
+    headers: youtubeHeaders,
+    signal: AbortSignal.timeout(15_000)
+  });
+  if (!response.ok) throw new Error('無法讀取這個 Spotify 歌單');
+  const html = await response.text();
+  const raw = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.+?)<\/script>/s)?.[1];
+  let entity = null;
+  try { entity = raw && JSON.parse(raw).props?.pageProps?.state?.data?.entity; } catch { entity = null; }
+  if (!entity?.trackList) throw new Error('找不到這個 Spotify 歌單，請確認它是公開的');
+  const tracks = entity.trackList
+    .map(track => ({ title: String(track.title || '').trim(), artist: String(track.subtitle || '').trim() }))
+    .filter(track => track.title);
+  return { title: entity.name || 'Spotify 歌單', tracks, truncated: tracks.length >= 100 };
+}
+
 function markInCatalog(songs) {
   const known = db.prepare('SELECT 1 FROM seen WHERE video_id=? LIMIT 1');
   return songs.map(song => ({ ...song, inCatalog: Boolean(known.get(song.videoId)) }));
@@ -451,6 +476,11 @@ export const server = http.createServer(async (req, res) => {
       if (/^(RD|UL|LL|WL)/.test(listId)) { json(res, 400, { error: '自動合輯、稍後觀看等清單無法匯入，請使用一般播放清單' }); return; }
       const playlist = await fetchYouTubePlaylist(listId);
       json(res, 200, { title: playlist.title, truncated: playlist.truncated, songs: markInCatalog(playlist.songs) });
+    } else if (req.method === 'POST' && url.pathname === '/api/import/spotify') {
+      const data = await body(req);
+      const ref = spotifyListRef(String(data.url || '').trim());
+      if (!ref) { json(res, 400, { error: '請貼上 Spotify 播放清單或專輯連結' }); return; }
+      json(res, 200, await fetchSpotifyList(ref));
     } else if (req.method === 'POST' && url.pathname === '/api/import') {
       const data = await body(req, 131_072);
       const songs = Array.isArray(data.songs) ? data.songs.slice(0, 300) : [];

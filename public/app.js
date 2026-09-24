@@ -518,23 +518,40 @@ async function loadImport() {
       $('importStatus').textContent = `「${title}」${truncated ? `太長了，只讀取前 ${songs.length} 首` : `共 ${songs.length} 首`}，可以修改歌名或取消勾選。`;
       return;
     }
-    const { lines, skippedLinks, tooMany } = parseSongLines(text);
-    if (!lines.length) { $('importStatus').textContent = '沒有讀到歌名。Spotify 等連結無法直接讀取，請貼上歌名。'; return; }
-    const notes = [skippedLinks && `略過 ${skippedLinks} 個無法讀取的連結`, tooMany && '只處理前 100 首'].filter(Boolean).join('，');
+    let lines;
+    let notes;
+    const spotifyUrl = text.split(/\s+/).find(word => /open\.spotify\.com\/.*(playlist|album)\/|spotify:(playlist|album):/i.test(word));
+    if (spotifyUrl) {
+      // Spotify only gives names, so each track goes through the same YouTube matching as pasted names.
+      $('importStatus').textContent = '正在讀取 Spotify 歌單…';
+      const list = await api('/api/import/spotify', { method: 'POST', body: JSON.stringify({ url: spotifyUrl }) });
+      if (serial !== importSerial) return;
+      lines = [...new Set(list.tracks.map(track => `${track.title} ${track.artist.split(',')[0]}`.trim()))];
+      notes = [`Spotify「${list.title}」`, list.truncated && 'Spotify 最多只提供前 100 首'].filter(Boolean).join('，');
+    } else {
+      const parsed = parseSongLines(text);
+      lines = parsed.lines;
+      notes = [parsed.skippedLinks && `略過 ${parsed.skippedLinks} 個無法讀取的連結`, parsed.tooMany && '只處理前 100 首'].filter(Boolean).join('，');
+    }
+    if (!lines.length) { $('importStatus').textContent = '沒有讀到歌名。單首歌曲連結無法讀取，請貼上歌名或播放清單連結。'; return; }
     buildImportList(lines.map(line => ({ title: line, query: line, checked: false, results: [], choice: 0, status: 'pending' })));
     const style = $('importStyle').value;
     // One search at a time with a short pause, so a long list doesn't flood YouTube.
     for (const [index, item] of importItems.entries()) {
       $('importStatus').textContent = `正在比對 YouTube ${index + 1}/${importItems.length}…${notes ? `（${notes}）` : ''}`;
-      try {
-        const { results } = await api(`/api/youtube-search?q=${encodeURIComponent(item.title + style)}`);
+      item.status = 'error';
+      // YouTube occasionally fails a search during a long run of them; back off and retry.
+      for (const wait of [0, 2000, 5000]) {
+        if (wait) await new Promise(resolve => setTimeout(resolve, wait));
         if (serial !== importSerial) return;
-        item.results = results.slice(0, 5);
-        item.status = 'done';
-      } catch {
-        if (serial !== importSerial) return;
-        item.status = 'error';
+        try {
+          const { results } = await api(`/api/youtube-search?q=${encodeURIComponent(item.query + style)}`);
+          item.results = results.slice(0, 5);
+          item.status = 'done';
+          break;
+        } catch { /* retry */ }
       }
+      if (serial !== importSerial) return;
       item.checked = item.results.length > 0 && looksRelated(item.query, item.results[0].title);
       renderImportRow(item);
       await new Promise(resolve => setTimeout(resolve, 250));
