@@ -71,6 +71,26 @@
           <label for="searchInput">搜尋歌名</label>
           <div class="search-wrap"><span>⌕</span><input id="searchInput" type="search" maxlength="100" placeholder="想唱什麼歌？" autocomplete="off"></div>
           <div id="searchResults" class="search-results"></div>
+          <button id="importOpen" class="open-qr-button" type="button">匯入歌單（YouTube 播放清單或歌名清單）</button>
+          <section id="importPanel" class="import-panel" hidden aria-labelledby="importTitle">
+            <div class="new-song-title" id="importTitle">匯入歌單</div>
+            <p>貼上 YouTube 播放清單連結，或每行一首歌，例如「告白氣球 周杰倫」。Spotify 或其他 App 的歌單，可以把歌名複製過來貼上。</p>
+            <textarea id="importInput" rows="5" maxlength="20000" placeholder="https://www.youtube.com/playlist?list=...&#10;或&#10;告白氣球 周杰倫&#10;小幸運 田馥甄"></textarea>
+            <label for="importStyle">歌名清單要找哪種版本</label>
+            <select id="importStyle">
+              <option value="">原曲 / MV</option>
+              <option value=" KTV">KTV 版（有字幕）</option>
+              <option value=" 伴奏">伴奏版</option>
+            </select>
+            <div class="form-actions"><button id="importCancel" class="text-button" type="button">取消</button><button id="importLoad" class="primary-button" type="button">讀取歌單</button></div>
+            <div id="importStatus" class="import-status" role="status"></div>
+            <div id="importList" class="import-list"></div>
+            <div id="importFooter" class="import-footer" hidden>
+              <button id="importToggleAll" class="small-button" type="button">全不選</button>
+              <label class="import-check"><input id="importEnqueue" type="checkbox"> 同時加入待播清單</label>
+              <button id="importSave" class="primary-button" type="button">匯入</button>
+            </div>
+          </section>
           <section id="catalogPanel" class="catalog-panel" hidden aria-labelledby="catalogTitle">
             <div class="catalog-heading">
               <div><span class="eyebrow">SONG BOOK</span><h3 id="catalogTitle">所有歌曲</h3></div>

@@ -413,6 +413,171 @@ async function saveSong() {
     toast('新歌已收錄並加入歌單');
   } catch (error) { toast(error.message); }
 }
+// ---- Song list import ----
+// Two sources: a YouTube playlist link (already videos), or pasted song names that are each
+// matched to a YouTube search result. Everything is shown for review before saving.
+let importItems = [];
+let importSerial = 0;
+let importBusy = false;
+
+function parseSongLines(text) {
+  const seen = new Set();
+  const lines = [];
+  let skippedLinks = 0;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/^\s*(\d+\s*[.)、:：]|[-•*·])\s*/, '').replace(/\s+/g, ' ').trim().slice(0, 100);
+    if (!line) continue;
+    if (/^https?:\/\//i.test(line)) { skippedLinks += 1; continue; }
+    const key = line.toLocaleLowerCase('zh-Hant');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lines.push(line);
+  }
+  return { lines: lines.slice(0, 100), skippedLinks, tooMany: lines.length > 100 };
+}
+function importChoice(item) { return item.results[item.choice] || null; }
+// YouTube always returns something; flag results that share no word with what was typed.
+function looksRelated(query, title) {
+  const target = title.toLocaleLowerCase('zh-Hant');
+  return query.toLocaleLowerCase('zh-Hant').split(/\s+/).some(word => word && target.includes(word));
+}
+function updateImportFooter() {
+  const count = importItems.filter(item => item.checked && importChoice(item)).length;
+  $('importFooter').hidden = !importItems.length;
+  $('importSave').textContent = `匯入 ${count} 首`;
+  $('importSave').disabled = importBusy || !count;
+  $('importToggleAll').textContent = count ? '全不選' : '全選';
+}
+function renderImportRow(item) {
+  const video = importChoice(item);
+  item.check.checked = item.checked;
+  item.check.disabled = !video;
+  item.image.hidden = !video;
+  if (video) item.image.src = video.thumbnailUrl;
+  const area = item.videoArea;
+  area.replaceChildren();
+  if (item.status === 'pending') area.append(el('span', 'import-note', '等待比對…'));
+  else if (!video) area.append(el('span', 'import-note warn', item.status === 'error' ? '搜尋失敗' : '找不到影片'));
+  else if (item.results.length > 1) {
+    if (!looksRelated(item.query, video.title)) area.append(el('span', 'import-note warn', '可能不是這首，請確認'));
+    const select = el('select', 'import-select');
+    item.results.forEach((result, index) => {
+      const option = el('option', null, `${result.title}${result.inCatalog ? '（已在歌庫）' : ''}`);
+      option.value = String(index);
+      select.append(option);
+    });
+    select.value = String(item.choice);
+    select.addEventListener('change', () => { item.choice = Number(select.value); renderImportRow(item); });
+    area.append(select);
+  } else {
+    area.append(el('span', 'import-note', `${video.channel || 'YouTube'}${video.inCatalog ? ' · 已在歌庫' : ''}`));
+  }
+  updateImportFooter();
+}
+function buildImportList(items) {
+  importItems = items;
+  const list = $('importList');
+  list.replaceChildren();
+  for (const item of items) {
+    const row = el('div', 'import-row');
+    item.check = el('input');
+    item.check.type = 'checkbox';
+    item.check.setAttribute('aria-label', '匯入這首歌');
+    item.check.addEventListener('change', () => { item.checked = item.check.checked; updateImportFooter(); });
+    item.image = el('img', 'import-thumb');
+    item.image.alt = '';
+    item.image.loading = 'lazy';
+    item.image.referrerPolicy = 'no-referrer';
+    const body = el('div', 'import-body');
+    const title = el('input', 'import-title');
+    title.type = 'text';
+    title.maxLength = 120;
+    title.value = item.title;
+    title.setAttribute('aria-label', '歌名');
+    title.addEventListener('input', () => { item.title = title.value; });
+    item.videoArea = el('div', 'import-video');
+    body.append(title, item.videoArea);
+    row.append(item.check, item.image, body);
+    list.append(row);
+    renderImportRow(item);
+  }
+}
+async function loadImport() {
+  const text = $('importInput').value.trim();
+  if (!text) { toast('請貼上播放清單連結或歌名'); return; }
+  const serial = ++importSerial;
+  const playlistUrl = text.split(/\s+/).find(word => /youtube\.com\/.*[?&]list=/i.test(word));
+  importBusy = true;
+  buildImportList([]);
+  try {
+    if (playlistUrl) {
+      $('importStatus').textContent = '正在讀取播放清單…';
+      const { title, songs, truncated } = await api('/api/import/playlist', { method: 'POST', body: JSON.stringify({ url: playlistUrl }) });
+      if (serial !== importSerial) return;
+      buildImportList(songs.map(song => ({ title: song.title, checked: true, results: [song], choice: 0, status: 'done' })));
+      $('importStatus').textContent = `「${title}」${truncated ? `太長了，只讀取前 ${songs.length} 首` : `共 ${songs.length} 首`}，可以修改歌名或取消勾選。`;
+      return;
+    }
+    const { lines, skippedLinks, tooMany } = parseSongLines(text);
+    if (!lines.length) { $('importStatus').textContent = '沒有讀到歌名。Spotify 等連結無法直接讀取，請貼上歌名。'; return; }
+    const notes = [skippedLinks && `略過 ${skippedLinks} 個無法讀取的連結`, tooMany && '只處理前 100 首'].filter(Boolean).join('，');
+    buildImportList(lines.map(line => ({ title: line, query: line, checked: false, results: [], choice: 0, status: 'pending' })));
+    const style = $('importStyle').value;
+    // One search at a time with a short pause, so a long list doesn't flood YouTube.
+    for (const [index, item] of importItems.entries()) {
+      $('importStatus').textContent = `正在比對 YouTube ${index + 1}/${importItems.length}…${notes ? `（${notes}）` : ''}`;
+      try {
+        const { results } = await api(`/api/youtube-search?q=${encodeURIComponent(item.title + style)}`);
+        if (serial !== importSerial) return;
+        item.results = results.slice(0, 5);
+        item.status = 'done';
+      } catch {
+        if (serial !== importSerial) return;
+        item.status = 'error';
+      }
+      item.checked = item.results.length > 0 && looksRelated(item.query, item.results[0].title);
+      renderImportRow(item);
+      await new Promise(resolve => setTimeout(resolve, 250));
+      if (serial !== importSerial) return;
+    }
+    const missing = importItems.filter(item => !item.checked).length;
+    $('importStatus').textContent = `比對完成${missing ? `，${missing} 首沒有勾選，請確認` : ''}。可以換成其他搜尋結果、修改歌名或取消勾選。${notes ? `（${notes}）` : ''}`;
+  } catch (error) {
+    if (serial === importSerial) $('importStatus').textContent = error.message;
+  } finally {
+    if (serial === importSerial) { importBusy = false; updateImportFooter(); }
+  }
+}
+async function saveImport() {
+  const songs = importItems.filter(item => item.checked && importChoice(item))
+    .map(item => ({ title: item.title.trim() || importChoice(item).title, youtubeUrl: importChoice(item).youtubeUrl }));
+  if (!songs.length) return;
+  $('importSave').disabled = true;
+  try {
+    const enqueue = $('importEnqueue').checked;
+    const result = await api('/api/import', { method: 'POST', body: JSON.stringify({ songs, enqueue, name: name() }) });
+    const parts = [`已匯入 ${result.added} 首新歌`];
+    if (result.existing) parts.push(`${result.existing} 首原本就在歌庫`);
+    if (enqueue) parts.push(`${result.queued} 首加入待播清單`);
+    closeImport();
+    $('importInput').value = '';
+    catalogLoaded = false;
+    if (role === 'client') loadCatalog(true);
+    await refresh();
+    toast(parts.join('，'));
+  } catch (error) {
+    toast(error.message);
+    updateImportFooter();
+  }
+}
+function closeImport() {
+  importSerial += 1;
+  importBusy = false;
+  $('importPanel').hidden = true;
+  $('importStatus').textContent = '';
+  buildImportList([]);
+}
+
 function showError(message) { $('app').hidden = true; $('errorScreen').hidden = false; $('errorText').textContent = message; }
 
 $('nameInput').value = localStorage.getItem('ktv-name') || '';
@@ -422,6 +587,15 @@ $('catalogFilter').addEventListener('input', renderCatalog);
 $('catalogAddButton').addEventListener('click', () => { $('searchInput').value = ''; openNewSong(); });
 $('cancelNew').addEventListener('click', () => { $('newSong').hidden = true; });
 $('saveSong').addEventListener('click', saveSong);
+$('importOpen').addEventListener('click', () => { $('importPanel').hidden = false; $('importInput').focus(); });
+$('importCancel').addEventListener('click', closeImport);
+$('importLoad').addEventListener('click', loadImport);
+$('importSave').addEventListener('click', saveImport);
+$('importToggleAll').addEventListener('click', () => {
+  const select = !importItems.some(item => item.checked && importChoice(item));
+  for (const item of importItems) { item.checked = select && Boolean(importChoice(item)); item.check.checked = item.checked; }
+  updateImportFooter();
+});
 $('nextButton').addEventListener('click', () => action('/api/next', { method: 'POST' }, '已切換到下一首'));
 $('copyButton').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('inviteUrl').value); toast('連結已複製'); } catch { $('inviteUrl').select(); toast('請複製選取的連結'); } });
 $('openQrButton').addEventListener('click', () => {

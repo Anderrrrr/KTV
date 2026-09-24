@@ -122,11 +122,11 @@ function addToQueue(seenId, mode, name) {
   promoteIfIdle();
   return true;
 }
-async function body(req) {
+async function body(req, limit = 16_384) {
   let raw = '';
   for await (const chunk of req) {
     raw += chunk;
-    if (raw.length > 16_384) throw new Error('資料過大');
+    if (raw.length > limit) throw new Error('資料過大');
   }
   try { return JSON.parse(raw || '{}'); } catch { throw new Error('JSON 格式錯誤'); }
 }
@@ -196,15 +196,17 @@ function collectYouTubeVideos(value, results, foundIds) {
   for (const child of Object.values(value)) collectYouTubeVideos(child, results, foundIds);
 }
 
+const youtubeHeaders = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+  'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.7'
+};
+
 export async function searchYouTube(query) {
   const cacheKey = query.toLocaleLowerCase('zh-Hant');
   const cached = youtubeSearchCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.results;
   const response = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-      'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.7'
-    },
+    headers: youtubeHeaders,
     signal: AbortSignal.timeout(10_000)
   });
   if (!response.ok) throw new Error('YouTube 搜尋暫時無法使用');
@@ -217,6 +219,115 @@ export async function searchYouTube(query) {
   youtubeSearchCache.set(cacheKey, { results, expiresAt: Date.now() + 10 * 60_000 });
   if (youtubeSearchCache.size > 100) youtubeSearchCache.delete(youtubeSearchCache.keys().next().value);
   return results;
+}
+
+export function youtubePlaylistId(input) {
+  try {
+    const url = new URL(input);
+    if (!/(^|\.)youtube\.com$/i.test(url.hostname)) return null;
+    const id = url.searchParams.get('list') || '';
+    return /^[A-Za-z0-9_-]{10,64}$/.test(id) ? id : null;
+  } catch { return null; }
+}
+
+// Playlist pages list songs as lockupViewModel entries (older pages used playlistVideoRenderer).
+function collectPlaylistPage(value, page) {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) { for (const item of value) collectPlaylistPage(item, page); return; }
+  const lockup = value.lockupViewModel;
+  if (lockup) {
+    const meta = lockup.metadata?.lockupMetadataViewModel;
+    if (lockup.contentType === 'LOCKUP_CONTENT_TYPE_VIDEO') {
+      page.videos.push({
+        videoId: lockup.contentId,
+        title: meta?.title?.content || '',
+        channel: meta?.metadata?.contentMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]?.text?.content || ''
+      });
+    }
+    return;
+  }
+  const legacy = value.playlistVideoRenderer;
+  if (legacy) {
+    page.videos.push({
+      videoId: legacy.videoId,
+      title: legacy.title?.runs?.map(run => run.text).join('') || legacy.title?.simpleText || '',
+      channel: legacy.shortBylineText?.runs?.map(run => run.text).join('') || ''
+    });
+    return;
+  }
+  if (value.continuationCommand?.token) page.continuation ??= value.continuationCommand.token;
+  for (const child of Object.values(value)) collectPlaylistPage(child, page);
+}
+
+export async function fetchYouTubePlaylist(listId, limit = 300) {
+  const response = await fetch(`https://www.youtube.com/playlist?list=${encodeURIComponent(listId)}`, {
+    headers: youtubeHeaders,
+    signal: AbortSignal.timeout(15_000)
+  });
+  if (!response.ok) throw new Error('無法讀取這個 YouTube 播放清單');
+  const html = await response.text();
+  const initialData = jsonObjectAfter(html, 'var ytInitialData =') || jsonObjectAfter(html, 'ytInitialData =');
+  const tab = initialData?.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]?.tabRenderer?.content;
+  if (!tab) throw new Error('找不到播放清單，請確認它是公開或不公開（非私人）的清單');
+  const page = { videos: [], continuation: null };
+  collectPlaylistPage(tab, page);
+  const clientVersion = html.match(/"INNERTUBE_CLIENT_VERSION":"([^"]+)"/)?.[1];
+  // Each page holds 100 songs; follow the continuation for longer playlists.
+  while (page.continuation && clientVersion && page.videos.length < limit) {
+    const token = page.continuation;
+    page.continuation = null;
+    const next = await fetch('https://www.youtube.com/youtubei/v1/browse?prettyPrint=false', {
+      method: 'POST',
+      headers: { ...youtubeHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ context: { client: { clientName: 'WEB', clientVersion, hl: 'zh-TW' } }, continuation: token }),
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (!next.ok) break;
+    collectPlaylistPage((await next.json()).onResponseReceivedActions, page);
+  }
+  const unique = new Map();
+  for (const video of page.videos) {
+    if (/^[A-Za-z0-9_-]{11}$/.test(video.videoId || '') && video.title && !unique.has(video.videoId)) unique.set(video.videoId, video);
+  }
+  const title = initialData.header?.pageHeaderRenderer?.pageTitle
+    || initialData.metadata?.playlistMetadataRenderer?.title || 'YouTube 播放清單';
+  return {
+    title,
+    truncated: unique.size > limit || Boolean(page.continuation),
+    songs: [...unique.values()].slice(0, limit).map(video => ({
+      ...video,
+      youtubeUrl: `https://www.youtube.com/watch?v=${video.videoId}`,
+      thumbnailUrl: `https://i.ytimg.com/vi/${video.videoId}/mqdefault.jpg`
+    }))
+  };
+}
+
+function markInCatalog(songs) {
+  const known = db.prepare('SELECT 1 FROM seen WHERE video_id=? LIMIT 1');
+  return songs.map(song => ({ ...song, inCatalog: Boolean(known.get(song.videoId)) }));
+}
+
+function importSongs(songs, enqueue, name) {
+  const findExisting = db.prepare('SELECT id FROM seen WHERE video_id=? ORDER BY id LIMIT 1');
+  const insert = db.prepare('INSERT INTO seen(title,youtube_url,video_id) VALUES(?,?,?)');
+  const result = { added: 0, existing: 0, queued: 0 };
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const song of songs) {
+      const videoId = youtubeVideoId(String(song.youtubeUrl || '').trim());
+      const title = String(song.title || '').trim().slice(0, 120);
+      if (!videoId || !title) continue;
+      let seenId = findExisting.get(videoId)?.id;
+      if (seenId) result.existing += 1;
+      else {
+        seenId = Number(insert.run(title, `https://www.youtube.com/watch?v=${videoId}`, videoId).lastInsertRowid);
+        result.added += 1;
+      }
+      if (enqueue && addToQueue(seenId, 'end', name)) result.queued += 1;
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return result;
 }
 
 export function lyricsQueries(title) {
@@ -332,7 +443,20 @@ export const server = http.createServer(async (req, res) => {
     } else if (req.method === 'GET' && url.pathname === '/api/youtube-search') {
       const query = (url.searchParams.get('q') || '').trim().slice(0, 100);
       if (!query) { json(res, 400, { error: '請輸入要搜尋的歌名' }); return; }
-      json(res, 200, { results: await searchYouTube(query) });
+      json(res, 200, { results: markInCatalog(await searchYouTube(query)) });
+    } else if (req.method === 'POST' && url.pathname === '/api/import/playlist') {
+      const data = await body(req);
+      const listId = youtubePlaylistId(String(data.url || '').trim());
+      if (!listId) { json(res, 400, { error: '請貼上有效的 YouTube 播放清單連結' }); return; }
+      if (/^(RD|UL|LL|WL)/.test(listId)) { json(res, 400, { error: '自動合輯、稍後觀看等清單無法匯入，請使用一般播放清單' }); return; }
+      const playlist = await fetchYouTubePlaylist(listId);
+      json(res, 200, { title: playlist.title, truncated: playlist.truncated, songs: markInCatalog(playlist.songs) });
+    } else if (req.method === 'POST' && url.pathname === '/api/import') {
+      const data = await body(req, 131_072);
+      const songs = Array.isArray(data.songs) ? data.songs.slice(0, 300) : [];
+      if (!songs.length) { json(res, 400, { error: '沒有要匯入的歌曲' }); return; }
+      const name = String(data.name || '訪客').trim().slice(0, 40) || '訪客';
+      json(res, 201, { ...importSongs(songs, data.enqueue === true, name), ...state() });
     } else if (req.method === 'POST' && url.pathname === '/api/seen') {
       const data = await body(req);
       const title = String(data.title || '').trim().slice(0, 120);
