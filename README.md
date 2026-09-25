@@ -103,6 +103,37 @@ node server.js
 
 請將範例 IP 改成主機在區域網路中的 IPv4 位址。
 
+## 線上版（Netlify）
+
+除了在筆電上執行的本機版，也可以部署成線上版：不需要安裝 Node.js，手機也不必連同一個 Wi-Fi，打開網址就能用。
+
+- 任何人輸入「建立房間密碼」即可開一間房，建立後的畫面就是主持人畫面（播放影片、歌詞、主持人控制）。
+- 主持人畫面會顯示「主持人連結」，請收藏起來，之後用它回到同一間房。不要分享給別人。
+- 朋友掃描 QR code（`/join/房間代碼`）加入，每間房有自己的待播清單與歌唱紀錄；曲庫、歌詞時間與熱門排行所有房間共用。
+
+### 部署步驟
+
+1. 在 [Neon](https://neon.tech) 建立免費 Postgres 資料庫，開啟 Connection pooling 並複製連線字串。
+2. 在 Netlify 專案的 **Environment variables** 設定：
+   - `KTV_DATABASE_URL`：Neon 連線字串（建議把 `sslmode=require` 改成 `sslmode=verify-full`）
+   - `KTV_ROOM_PASSWORD`：建立房間時要輸入的密碼
+3. 建立資料表並載入預設曲庫：
+
+   ```bash
+   npm install
+   KTV_DATABASE_URL='postgresql://...' npm run migrate:online
+   ```
+
+4. （選用）把本機的曲庫、歌詞時間與歌唱紀錄搬到線上，會建立一間新房並印出主持人連結：
+
+   ```bash
+   KTV_DATABASE_URL='postgresql://...' KTV_SITE_URL='https://你的網站.netlify.app' node scripts/import-local-to-online.mjs "房間名稱"
+   ```
+
+5. 部署：`npx netlify-cli deploy --prod`。之後修改環境變數也需要重新部署才會生效。
+
+線上版的 YouTube 搜尋與匯入是從 Netlify 的伺服器連到 YouTube；目前測試可正常使用，但若 YouTube 開始阻擋雲端伺服器，這些功能可能失效，本機版則不受影響。
+
 ## 歌曲資料
 
 預設歌曲位於 [`seed/songs.json`](seed/songs.json)。資料庫不存在或曲庫為空時，伺服器會自動匯入這份檔案。
@@ -122,10 +153,14 @@ npm run export:songs
 ```text
 KTV/
 ├─ public/                 網頁、樣式與瀏覽器端程式
-├─ scripts/                曲庫匯入及匯出工具
+├─ scripts/                曲庫匯入匯出、線上資料表建立與本機資料搬移工具
 ├─ seed/songs.json         首次啟動用的歌曲與 YouTube 連結
 ├─ data/                   本機 SQLite 資料庫，不提交內容
-├─ server.js               HTTP API、SQLite 與靜態檔案伺服器
+├─ lib/                    共用 API 路由、YouTube/Spotify/歌詞查詢、SQLite 與 Postgres 資料層
+├─ db/migrations/          線上版 Postgres 資料表
+├─ netlify/functions/      線上版的 Netlify Function
+├─ netlify.toml            線上版部署設定
+├─ server.js               本機版伺服器（靜態檔案與 SQLite）
 ├─ setup-windows-server.ps1 Windows 主機網路與防火牆設定
 ├─ start-ktv.cmd           Windows 雙擊啟動器
 ├─ start-ktv.command       macOS 雙擊啟動器
