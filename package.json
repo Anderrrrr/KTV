@@ -6,11 +6,17 @@
   "scripts": {
     "start": "node server.js",
     "export:songs": "node scripts/export-song-seed.mjs",
+    "migrate:online": "node scripts/migrate-online.mjs",
     "test": "node --test"
   },
-  "engines": { "node": ">=22.5.0" },
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/Anderrrrr/KTV.git"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
   }
 }

@@ -70,7 +70,12 @@
           <div id="qrCode" class="qr-code"></div>
           <div class="invite-link"><input id="inviteUrl" readonly aria-label="手機點歌連結"><button id="copyButton" type="button">複製</button></div>
           <button id="openQrButton" class="open-qr-button" type="button">在副螢幕開啟 QR Code ↗</button>
-          <p class="network-hint">手機必須和這台電腦連接同一個 Wi-Fi。掃不開時，可在手機瀏覽器手動輸入上方網址。</p>
+          <p id="networkHint" class="network-hint">手機必須和這台電腦連接同一個 Wi-Fi。掃不開時，可在手機瀏覽器手動輸入上方網址。</p>
+          <div id="hostLinkBox" class="host-link" hidden>
+            <div class="eyebrow">HOST LINK</div>
+            <p>這是主持人專用連結，請收藏起來，之後用它回到這個房間。不要分享給別人。</p>
+            <div class="invite-link"><input id="hostLink" readonly aria-label="主持人連結"><button id="copyHostLink" type="button">複製</button></div>
+          </div>
         </section>
 
         <section class="song-card" aria-labelledby="addTitle">
@@ -129,6 +134,19 @@
         </section>
       </aside>
     </main>
+    <section id="createRoom" class="create-room" hidden aria-labelledby="createRoomTitle">
+      <div class="eyebrow">NEW ROOM</div>
+      <h1 id="createRoomTitle">開一間 KTV 包廂</h1>
+      <p>建立房間後，這個畫面會變成主持人畫面，負責播放影片。朋友掃 QR code 就能用手機點歌，不需要連同一個 Wi-Fi。</p>
+      <form id="createRoomForm">
+        <label for="roomName">房間名稱 <span class="optional">選填</span></label>
+        <input id="roomName" type="text" maxlength="40" placeholder="例如：週五唱歌局">
+        <label for="roomPassword">建立房間密碼</label>
+        <input id="roomPassword" type="password" required autocomplete="current-password">
+        <button class="primary-button" type="submit">建立房間</button>
+      </form>
+      <p class="create-room-note">已經有房間了？請使用當初收藏的主持人連結，或掃描主持人畫面上的 QR code 加入。</p>
+    </section>
     <div id="errorScreen" class="error-screen" hidden><div class="error-icon">♪</div><h1>無法加入點歌房間</h1><p id="errorText"></p></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </div>

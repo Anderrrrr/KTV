@@ -37,5 +37,5 @@ if (!token) {
   document.getElementById('displayError').hidden = false;
 } else {
   loadDisplay();
-  setInterval(loadDisplay, 3000);
+  setInterval(() => { if (!document.hidden) loadDisplay(); }, 5000);
 }

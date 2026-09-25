@@ -9,6 +9,7 @@ let searchSerial = 0;
 let toastTimer;
 let catalogSongs = [];
 let catalogLoaded = false;
+let siteMode = 'local';
 let catalogStale = false;
 let catalogSort = (() => { try { return localStorage.getItem('ktv-catalog-sort') || 'title'; } catch { return 'title'; } })();
 
@@ -73,6 +74,12 @@ async function refresh() {
   $('roleBadge').textContent = role === 'admin' ? '主機管理模式' : '手機點歌模式';
   $('app').hidden = false;
   $('inviteCard').hidden = role !== 'admin';
+  if (siteMode === 'online') {
+    $('networkHint').hidden = true;
+    $('hostLinkBox').hidden = role !== 'admin';
+    if (role === 'admin' && !$('hostLink').value) $('hostLink').value = location.href;
+    if (data.roomName) $('roleBadge').textContent = `${data.roomName} · ${role === 'admin' ? '主持人' : '點歌'}`;
+  }
   $('catalogPanel').hidden = role !== 'client';
   renderNow(data.current);
   renderQueue(data.upcoming);
@@ -419,13 +426,25 @@ let historyData = null;
 let historyKey; // undefined until the first state load, so history always loads once
 
 function historyTime(value) {
-  const date = new Date(`${value.replace(' ', 'T')}Z`);
-  return date.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return new Date(value).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
-function nightLabel(value) {
-  const [year, month, day] = value.split('-').map(Number);
-  const weekday = '日一二三四五六'[new Date(year, month - 1, day).getDay()];
-  return `${month}/${day}（${weekday}）`;
+// A KTV night often runs past midnight, so a "night" starts at 6am local time.
+function nightOf(value) {
+  const date = new Date(value);
+  date.setHours(date.getHours() - 6);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+function nightLabel(night) {
+  return `${night.getMonth() + 1}/${night.getDate()}（${'日一二三四五六'[night.getDay()]}）`;
+}
+function groupNights(songs) {
+  const nights = [];
+  for (const song of songs) {
+    const night = nightOf(song.played_at);
+    if (nights.at(-1)?.date.getTime() !== night.getTime()) nights.push({ date: night, songs: [] });
+    nights.at(-1).songs.push(song);
+  }
+  return nights;
 }
 function historyActions(seenId) {
   const actions = el('div', 'history-actions');
@@ -445,7 +464,7 @@ function renderHistory() {
     historyData.popular.forEach((song, index) => {
       const row = el('div', 'queue-row history-row');
       const info = el('div');
-      info.append(el('div', 'queue-title', song.title), el('div', 'queue-meta', `唱過 ${song.plays} 次 · 最近 ${nightLabel(song.last_night)}`));
+      info.append(el('div', 'queue-title', song.title), el('div', 'queue-meta', `唱過 ${song.plays} 次 · 最近 ${nightLabel(nightOf(song.last_played))}`));
       row.append(el('div', 'queue-number', String(index + 1).padStart(2, '0')), info, historyActions(song.seen_id));
       area.append(row);
     });
@@ -471,7 +490,8 @@ function renderHistory() {
 }
 async function loadHistory() {
   try {
-    historyData = await api('/api/history');
+    const data = await api('/api/history');
+    historyData = { nights: groupNights(data.songs), popular: data.popular };
     renderHistory();
   } catch { /* the next song change retries */ }
 }
@@ -710,8 +730,29 @@ $('openQrButton').addEventListener('click', () => {
   if (!popup) toast('瀏覽器阻擋了新視窗，請允許彈出式視窗');
   else popup.focus();
 });
-if (!token) showError('請從主機畫面的 QR code 加入。');
-else {
+async function start() {
+  try { siteMode = (await api('/api/config')).mode; } catch { siteMode = 'local'; }
+  if (!token) {
+    if (siteMode === 'online') { $('createRoom').hidden = false; $('roleBadge').textContent = '建立房間'; }
+    else showError('請從主機畫面的 QR code 加入。');
+    return;
+  }
   refresh().catch(error => showError(error.message));
-  setInterval(() => refresh().catch(() => toast('連線中斷，正在重試…')), 2500);
+  // Online, every refresh is a paid function call, so poll less often and not while hidden.
+  setInterval(() => {
+    if (!document.hidden) refresh().catch(() => toast('連線中斷，正在重試…'));
+  }, siteMode === 'online' ? 5000 : 2500);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh().catch(() => {}); });
 }
+$('createRoomForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  try {
+    const { hostToken } = await api('/api/rooms', { method: 'POST', body: JSON.stringify({ name: $('roomName').value, password: $('roomPassword').value }) });
+    location.replace(`/?token=${encodeURIComponent(hostToken)}`);
+  } catch (error) { toast(error.message); }
+});
+$('copyHostLink').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('hostLink').value); toast('主持人連結已複製'); }
+  catch { $('hostLink').select(); toast('請複製選取的連結'); }
+});
+start();

@@ -4,3 +4,5 @@ data/*
 node_modules/
 *.log
 .DS_Store
+.netlify/
+deno.lock

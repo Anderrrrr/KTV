@@ -1,0 +1,7 @@
+# Online version on Netlify. The local version (server.js) doesn't use this file.
+[build]
+  publish = "public"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
