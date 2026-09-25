@@ -25,9 +25,19 @@
           <div id="playerWrap" class="player-wrap" hidden>
             <div id="player"></div>
             <div id="lyricsOverlay" class="lyrics-overlay" hidden aria-live="off">
-              <div class="lyric-line"><span class="lyric-base"></span><span class="lyric-fill" aria-hidden="true"></span></div>
-              <div class="lyric-line"><span class="lyric-base"></span><span class="lyric-fill" aria-hidden="true"></span></div>
+              <div class="lyric-line"><span class="lyric-dots" aria-hidden="true"></span><span class="lyric-base"></span><span class="lyric-fill" aria-hidden="true"></span></div>
+              <div class="lyric-line"><span class="lyric-dots" aria-hidden="true"></span><span class="lyric-base"></span><span class="lyric-fill" aria-hidden="true"></span></div>
             </div>
+          </div>
+          <div id="versionBar" class="version-bar" hidden>
+            <button id="versionToggle" class="version-toggle" type="button">切換到原唱</button>
+            <span id="versionStatus" class="version-status"></span>
+            <span id="versionAlign" class="version-align" hidden>
+              <button id="versionEarlier" class="small-button" type="button" title="切換後對不上時微調，會記住">⏪ 0.5s</button>
+              <button id="versionLater" class="small-button" type="button" title="切換後對不上時微調，會記住">⏩ 0.5s</button>
+            </span>
+            <button id="versionFind" class="small-button" type="button" hidden>找原唱版本</button>
+            <div id="versionPicker" class="version-picker" hidden></div>
           </div>
           <div id="lyricsBar" class="lyrics-bar" hidden>
             <button id="lyricsToggle" class="small-button" type="button">字幕：開</button>

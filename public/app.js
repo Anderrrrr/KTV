@@ -9,6 +9,7 @@ let searchSerial = 0;
 let toastTimer;
 let catalogSongs = [];
 let catalogLoaded = false;
+let currentSong = null;
 let siteMode = 'local';
 let catalogStale = false;
 let catalogSort = (() => { try { return localStorage.getItem('ktv-catalog-sort') || 'title'; } catch { return 'title'; } })();
@@ -50,7 +51,9 @@ function renderNow(song) {
   } else {
     area.append(el('div', 'now-title', song.title), el('div', 'now-sub', `由 ${song.added_by} 點播`));
   }
-  if (role === 'admin') { syncPlayer(song?.video_id || null); syncLyrics(song?.seen_id || null); }
+  currentSong = song;
+  syncVersion(song);
+  if (role === 'admin') { syncPlayer(desiredVideo(song), song); syncLyrics(song?.seen_id || null); }
 }
 function renderQueue(songs) {
   $('queueCount').textContent = `${songs.length} 首`;
@@ -111,12 +114,20 @@ function renderQr(url) {
     target.append(img);
   }
 }
-function syncPlayer(videoId) {
+function syncPlayer(videoId, song) {
   $('playerWrap').hidden = !videoId;
   if (!videoId) { renderedVideoId = null; if (player?.stopVideo) player.stopVideo(); return; }
   if (videoId === renderedVideoId) return;
+  // Switching 原唱／伴唱 mid-song: continue from the same moment in the other video.
+  let start = 0;
+  const partner = version.info?.partner;
+  if (playerReady && song && partner && version.queueId === song.id) {
+    const now = player.getCurrentTime() || 0;
+    if (renderedVideoId === song.video_id && videoId === partner.video_id) start = now + partner.offset_ms / 1000;
+    else if (renderedVideoId === partner.video_id && videoId === song.video_id) start = now - partner.offset_ms / 1000;
+  }
   renderedVideoId = videoId;
-  if (playerReady) player.loadVideoById(videoId);
+  if (playerReady) player.loadVideoById({ videoId, startSeconds: Math.max(0, start) });
   else if (!player) loadPlayer();
 }
 function loadPlayer() {
@@ -134,7 +145,8 @@ window.onYouTubeIframeAPIReady = () => {
       onStateChange: event => {
         loadLyrics();
         if (event.data === YT.PlayerState.ENDED) action('/api/next', { method: 'POST', body: JSON.stringify({ reason: 'finished' }) });
-      }
+      },
+      onError: handlePlayerError
     }
   });
 };
@@ -147,7 +159,7 @@ let lyricsEnabled = localStorage.getItem('ktv-lyrics') !== 'off';
 let lyricsFrame = null;
 let clock = { reported: -1, at: 0, shown: 0 };
 const slots = [...document.querySelectorAll('#lyricsOverlay .lyric-line')].map(line => ({
-  line, base: line.querySelector('.lyric-base'), fill: line.querySelector('.lyric-fill'), text: null
+  line, base: line.querySelector('.lyric-base'), fill: line.querySelector('.lyric-fill'), dots: line.querySelector('.lyric-dots'), text: null
 }));
 
 function parseLrc(text) {
@@ -260,22 +272,146 @@ function setSlot(slot, line, progress) {
 function drawLyrics() {
   lyricsFrame = null;
   if ($('lyricsOverlay').hidden || !playerReady) return;
-  const t = videoMs() - lyrics.offsetMs;
+  // Lyrics are timed to the requested video; on the other version, shift by the pair's offset.
+  const t = videoMs() - lyrics.offsetMs - (onPartnerVideo() ? version.info.partner.offset_ms : 0);
   const lines = lyrics.lines;
   let current = -1;
   while (current + 1 < lines.length && lines[current + 1].start <= t) current += 1;
+  const next = lines[current + 1];
   if (current < 0) {
     setSlot(slots[0], lines[0], 0);
     setSlot(slots[1], lines[1], 0);
   } else {
     const line = lines[current];
-    const next = lines[current + 1];
     const inBreak = t > line.end + 3000 && (!next || next.start - t > 5000);
     setSlot(slots[current % 2], inBreak ? null : line, Math.min(1, Math.max(0, (t - line.start) / (line.end - line.start))));
     setSlot(slots[(current + 1) % 2], next, 0);
   }
+  // ●●● countdown before a line that follows the intro or an instrumental break.
+  const lastEnd = current < 0 ? 0 : lines[current].end;
+  const wait = next ? next.start - t : Infinity;
+  const dots = next && next.start - lastEnd >= 4000 && t >= lastEnd && wait > 0 && wait <= 3000 ? '●'.repeat(Math.ceil(wait / 1000)) : '';
+  slots.forEach((slot, index) => {
+    const text = index === (current + 1) % 2 ? dots : '';
+    if (slot.dots.textContent !== text) slot.dots.textContent = text;
+  });
   lyricsFrame = requestAnimationFrame(drawLyrics);
 }
+// A video that's been deleted, made private or blocked from embedding never ends,
+// which would stall the party. Fall back to the requested version, or skip the song.
+function handlePlayerError() {
+  const song = currentSong;
+  if (!song) return;
+  if (onPartnerVideo()) {
+    toast(`${versionName(version.info.partnerKind)}版本無法播放，已切回。請按「更換${versionName(version.info.partnerKind)}版本」換一個`);
+    action('/api/playing/partner', { method: 'POST', body: JSON.stringify({ queueId: song.id, on: false }) });
+    return;
+  }
+  toast('這首的影片無法播放（可能已刪除或設為私人），5 秒後跳到下一首');
+  setTimeout(() => {
+    if (currentSong?.id === song.id) action('/api/next', { method: 'POST', body: JSON.stringify({ reason: 'skipped' }) });
+  }, 5000);
+}
+
+// ---- 原唱／伴唱 ----
+// Each song can be paired with its other version (vocal original or karaoke track).
+// Anyone can switch the playing song; the server remembers it so the host screen follows.
+let version = { queueId: null, seenId: null, info: null, saveTimer: null };
+const versionName = kind => (kind === 'vocal' ? '原唱' : '伴唱');
+
+function desiredVideo(song) {
+  if (!song) return null;
+  const partner = version.info?.partner;
+  return song.use_partner && partner && version.queueId === song.id ? partner.video_id : song.video_id;
+}
+function onPartnerVideo() {
+  const partner = version.info?.partner;
+  return Boolean(partner && currentSong && renderedVideoId === partner.video_id && renderedVideoId !== currentSong.video_id);
+}
+function syncVersion(song) {
+  if ((song?.id ?? null) !== version.queueId) {
+    version = { queueId: song?.id ?? null, seenId: song?.seen_id ?? null, info: null, saveTimer: null };
+    $('versionPicker').hidden = true;
+    if (song) loadVersion();
+  }
+  renderVersion();
+}
+async function loadVersion() {
+  const { queueId, seenId } = version;
+  try {
+    const info = await api(`/api/versions/${seenId}`);
+    if (queueId !== version.queueId) return;
+    version.info = info;
+    if (role === 'admin') syncPlayer(desiredVideo(currentSong), currentSong);
+    renderVersion();
+  } catch { /* the bar stays hidden; the next song retries */ }
+}
+function renderVersion() {
+  const info = version.info;
+  const song = currentSong;
+  const isHost = role === 'admin';
+  $('versionBar').hidden = !song || !info || (!info.partner && !isHost);
+  if ($('versionBar').hidden) return;
+  const switched = Boolean(song.use_partner && info.partner);
+  const playing = switched ? info.partnerKind : info.kind;
+  const other = switched ? info.kind : info.partnerKind;
+  $('versionToggle').hidden = !info.partner;
+  $('versionToggle').textContent = `🎤 切換到${versionName(other)}`;
+  $('versionStatus').textContent = info.partner ? `目前：${versionName(playing)}` : `這首還沒有${versionName(info.partnerKind)}版本`;
+  $('versionAlign').hidden = !isHost || !switched;
+  $('versionFind').hidden = !isHost;
+  $('versionFind').textContent = info.partner ? `更換${versionName(info.partnerKind)}版本` : `找${versionName(info.partnerKind)}版本`;
+}
+async function toggleVersion() {
+  if (!currentSong || !version.info?.partner) return;
+  await action('/api/playing/partner', { method: 'POST', body: JSON.stringify({ queueId: currentSong.id, on: !currentSong.use_partner }) });
+}
+function nudgeVersion(deltaMs) {
+  const partner = version.info?.partner;
+  if (!partner || !onPartnerVideo()) return;
+  partner.offset_ms += deltaMs;
+  player.seekTo(Math.max(0, (player.getCurrentTime() || 0) + deltaMs / 1000), true);
+  clearTimeout(version.saveTimer);
+  const { seenId } = version;
+  const offsetMs = partner.offset_ms;
+  version.saveTimer = setTimeout(() => api(`/api/versions/${seenId}`, { method: 'PATCH', body: JSON.stringify({ offsetMs }) }).catch(error => toast(error.message)), 600);
+}
+async function findVersion() {
+  const picker = $('versionPicker');
+  if (!picker.hidden) { picker.hidden = true; return; }
+  const { queueId, seenId, info } = version;
+  picker.hidden = false;
+  picker.replaceChildren(el('div', 'search-empty', `正在 YouTube 搜尋「${info.searchQuery}」…`));
+  try {
+    const { results } = await api(`/api/youtube-search?q=${encodeURIComponent(info.searchQuery)}`);
+    if (queueId !== version.queueId) return;
+    picker.replaceChildren(el('div', 'search-section-title', `選一個${versionName(info.partnerKind)}版本（之後會記住）`));
+    if (!results.length) picker.append(el('div', 'search-empty', 'YouTube 找不到，請稍後再試。'));
+    for (const result of results) {
+      const row = el('div', 'version-choice');
+      const image = el('img', 'import-thumb');
+      image.src = result.thumbnailUrl;
+      image.alt = '';
+      image.referrerPolicy = 'no-referrer';
+      const copy = el('div', 'version-choice-copy');
+      copy.append(el('div', 'youtube-result-title', result.title), el('div', 'youtube-result-channel', result.channel || 'YouTube'));
+      row.append(image, copy, button('使用這個', 'small-button', async () => {
+        try {
+          const updated = await api(`/api/versions/${seenId}`, { method: 'POST', body: JSON.stringify({ youtubeUrl: result.youtubeUrl }) });
+          if (queueId !== version.queueId) return;
+          version.info = updated;
+          picker.hidden = true;
+          renderVersion();
+          toast(`已設定${versionName(updated.partnerKind)}版本`);
+        } catch (error) { toast(error.message); }
+      }));
+      picker.append(row);
+    }
+  } catch (error) {
+    picker.replaceChildren(el('div', 'search-empty', error.message));
+  }
+}
+
 function toggleFullscreen() {
   const wrap = $('playerWrap');
   if (document.fullscreenElement || document.webkitFullscreenElement) {
@@ -299,6 +435,10 @@ $('lyricsLater').addEventListener('click', () => nudgeOffset(500));
 $('lyricsSwap').addEventListener('click', () => searchLyrics(''));
 $('lyricsSearchForm').addEventListener('submit', event => { event.preventDefault(); searchLyrics($('lyricsQuery').value.trim()); });
 $('lyricsFullscreen').addEventListener('click', toggleFullscreen);
+$('versionToggle').addEventListener('click', toggleVersion);
+$('versionEarlier').addEventListener('click', () => nudgeVersion(-500));
+$('versionLater').addEventListener('click', () => nudgeVersion(500));
+$('versionFind').addEventListener('click', findVersion);
 document.addEventListener('fullscreenchange', onFullscreenChange);
 document.addEventListener('webkitfullscreenchange', onFullscreenChange);
 async function search() {
