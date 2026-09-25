@@ -49,6 +49,17 @@
           <div class="section-heading"><div><span class="eyebrow">UP NEXT</span><h2 id="queueTitle">接下來唱</h2></div><span id="queueCount" class="count">0 首</span></div>
           <div id="queueList" class="queue-list"></div>
         </section>
+
+        <section class="history-section" aria-labelledby="historyTitle">
+          <div class="section-heading">
+            <div><span class="eyebrow">HISTORY</span><h2 id="historyTitle">歌唱紀錄</h2></div>
+            <div class="segmented" role="tablist" aria-label="歌唱紀錄檢視">
+              <button id="historyTabNights" class="active" type="button" role="tab" aria-selected="true">每晚紀錄</button>
+              <button id="historyTabPopular" type="button" role="tab" aria-selected="false">熱門排行</button>
+            </div>
+          </div>
+          <div id="historyBody" class="history-body"></div>
+        </section>
       </section>
 
       <aside class="side-column">
@@ -96,7 +107,13 @@
               <div><span class="eyebrow">SONG BOOK</span><h3 id="catalogTitle">所有歌曲</h3></div>
               <button id="catalogAddButton" class="small-button" type="button">＋ 新增歌曲</button>
             </div>
-            <input id="catalogFilter" type="search" placeholder="篩選所有歌曲" autocomplete="off">
+            <div class="catalog-tools">
+              <input id="catalogFilter" type="search" placeholder="篩選所有歌曲" autocomplete="off">
+              <div class="segmented" role="group" aria-label="排序">
+                <button id="catalogSortTitle" class="active" type="button">依歌名</button>
+                <button id="catalogSortPopular" type="button">熱門</button>
+              </div>
+            </div>
             <div id="catalogCount" class="catalog-count"></div>
             <div id="catalogGrid" class="catalog-grid"></div>
           </section>

@@ -57,6 +57,15 @@ function seedSongsWhenEmpty() {
 }
 seedSongsWhenEmpty();
 
+// Play history: when each song started/ended and whether it finished or was skipped.
+// Older rows only have created_at (the request time).
+const queueColumns = db.prepare('PRAGMA table_info(queue)').all().map(column => column.name);
+for (const column of ['started_at', 'ended_at', 'end_reason']) {
+  if (!queueColumns.includes(column)) db.exec(`ALTER TABLE queue ADD COLUMN ${column} TEXT`);
+}
+// Skipped songs don't count towards how popular a song is.
+const SUNG = "q.status IN ('done','playing') AND COALESCE(q.end_reason,'') <> 'skipped'";
+
 function setting(key) {
   let row = db.prepare('SELECT value FROM config WHERE key=?').get(key);
   if (!row) {
@@ -96,20 +105,41 @@ function state() {
       ORDER BY CASE q.status WHEN 'playing' THEN 0 ELSE 1 END, q.sort_order, q.id`).all();
   return { current: rows.find(x => x.status === 'playing') ?? null, upcoming: rows.filter(x => x.status === 'pending') };
 }
-function advance() {
+function advance(reason) {
   db.exec('BEGIN IMMEDIATE');
   try {
-    db.prepare("UPDATE queue SET status='done' WHERE status='playing'").run();
+    db.prepare("UPDATE queue SET status='done', ended_at=CURRENT_TIMESTAMP, end_reason=? WHERE status='playing'").run(reason);
     const next = db.prepare("SELECT id FROM queue WHERE status='pending' ORDER BY sort_order,id LIMIT 1").get();
-    if (next) db.prepare("UPDATE queue SET status='playing' WHERE id=?").run(next.id);
+    if (next) db.prepare("UPDATE queue SET status='playing', started_at=CURRENT_TIMESTAMP WHERE id=?").run(next.id);
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 function promoteIfIdle() {
   if (!db.prepare("SELECT id FROM queue WHERE status='playing' LIMIT 1").get()) {
     const next = db.prepare("SELECT id FROM queue WHERE status='pending' ORDER BY sort_order,id LIMIT 1").get();
-    if (next) db.prepare("UPDATE queue SET status='playing' WHERE id=?").run(next.id);
+    if (next) db.prepare("UPDATE queue SET status='playing', started_at=CURRENT_TIMESTAMP WHERE id=?").run(next.id);
   }
+}
+
+// A KTV night often runs past midnight, so a "night" starts at 6am local time.
+function history() {
+  const rows = db.prepare(`SELECT q.id, q.seen_id, s.title, s.video_id, q.added_by, q.status, q.end_reason,
+      COALESCE(q.started_at, q.created_at) AS played_at,
+      date(COALESCE(q.started_at, q.created_at), 'localtime', '-6 hours') AS night
+      FROM queue q JOIN seen s ON s.id=q.seen_id
+      WHERE q.status IN ('done','playing')
+      ORDER BY played_at DESC, q.id DESC LIMIT 500`).all();
+  const nights = [];
+  for (const row of rows) {
+    if (nights.at(-1)?.date !== row.night) nights.push({ date: row.night, songs: [] });
+    nights.at(-1).songs.push(row);
+  }
+  const popular = db.prepare(`SELECT s.id AS seen_id, s.title, s.video_id, COUNT(*) AS plays,
+      MAX(COALESCE(q.started_at, q.created_at)) AS last_played,
+      date(MAX(COALESCE(q.started_at, q.created_at)), 'localtime', '-6 hours') AS last_night
+      FROM queue q JOIN seen s ON s.id=q.seen_id WHERE ${SUNG}
+      GROUP BY s.id ORDER BY plays DESC, last_played DESC LIMIT 30`).all();
+  return { nights, popular };
 }
 function addToQueue(seenId, mode, name) {
   const song = db.prepare('SELECT id FROM seen WHERE id=?').get(seenId);
@@ -459,7 +489,9 @@ export const server = http.createServer(async (req, res) => {
       const query = (url.searchParams.get('q') || '').trim().slice(0, 100);
       const showAll = url.searchParams.get('all') === '1';
       const rows = showAll
-        ? db.prepare('SELECT id,title,youtube_url,video_id FROM seen ORDER BY title COLLATE NOCASE, id DESC LIMIT 500').all()
+        ? db.prepare(`SELECT id,title,youtube_url,video_id,
+            (SELECT COUNT(*) FROM queue q WHERE q.seen_id=seen.id AND ${SUNG}) AS play_count
+            FROM seen ORDER BY title COLLATE NOCASE, id DESC LIMIT 500`).all()
         : query
         ? db.prepare('SELECT id,title,youtube_url,video_id FROM seen WHERE title LIKE ? ESCAPE \'\\\' ORDER BY id DESC LIMIT 30')
           .all(`%${query.replace(/[\\%_]/g, '\\$&')}%`)
@@ -536,8 +568,11 @@ export const server = http.createServer(async (req, res) => {
       const row = db.prepare('UPDATE lyrics SET offset_ms=? WHERE seen_id=?').run(offset, Number(url.pathname.split('/').pop()));
       if (!row.changes) { json(res, 404, { error: '這首歌還沒有歌詞' }); return; }
       json(res, 200, { offset_ms: offset });
+    } else if (req.method === 'GET' && url.pathname === '/api/history') {
+      json(res, 200, history());
     } else if (req.method === 'POST' && url.pathname === '/api/next') {
-      advance(); json(res, 200, state());
+      const data = await body(req);
+      advance(data.reason === 'finished' ? 'finished' : 'skipped'); json(res, 200, state());
     } else { json(res, 404, { error: '找不到功能' }); }
   } catch (e) {
     json(res, 400, { error: e.message || '操作失敗' });

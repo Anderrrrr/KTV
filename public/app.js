@@ -9,6 +9,8 @@ let searchSerial = 0;
 let toastTimer;
 let catalogSongs = [];
 let catalogLoaded = false;
+let catalogStale = false;
+let catalogSort = (() => { try { return localStorage.getItem('ktv-catalog-sort') || 'title'; } catch { return 'title'; } })();
 
 function toast(message) {
   $('toast').textContent = message;
@@ -74,6 +76,15 @@ async function refresh() {
   $('catalogPanel').hidden = role !== 'client';
   renderNow(data.current);
   renderQueue(data.upcoming);
+  const key = data.current?.id ?? null;
+  if (key !== historyKey) {
+    historyKey = key;
+    loadHistory();
+    if (catalogLoaded) {
+      if (catalogSort === 'popular') loadCatalog(true);
+      else catalogStale = true;
+    }
+  }
   if (role === 'client' && !catalogLoaded) loadCatalog();
   if (role === 'admin' && data.clientUrl && $('inviteUrl').value !== data.clientUrl) {
     $('inviteUrl').value = data.clientUrl;
@@ -115,7 +126,7 @@ window.onYouTubeIframeAPIReady = () => {
       onReady: event => { playerReady = true; if (renderedVideoId) event.target.loadVideoById(renderedVideoId); },
       onStateChange: event => {
         loadLyrics();
-        if (event.data === YT.PlayerState.ENDED) action('/api/next', { method: 'POST' });
+        if (event.data === YT.PlayerState.ENDED) action('/api/next', { method: 'POST', body: JSON.stringify({ reason: 'finished' }) });
       }
     }
   });
@@ -358,7 +369,11 @@ async function queueSong(seenId, mode) {
 }
 function renderCatalog() {
   const query = $('catalogFilter').value.trim().toLocaleLowerCase('zh-Hant');
-  const songs = query ? catalogSongs.filter(song => song.title.toLocaleLowerCase('zh-Hant').includes(query)) : catalogSongs;
+  let songs = query ? catalogSongs.filter(song => song.title.toLocaleLowerCase('zh-Hant').includes(query)) : catalogSongs;
+  // Server order is by title; "popular" re-sorts by times sung, keeping title order for ties.
+  if (catalogSort === 'popular') songs = [...songs].sort((a, b) => (b.play_count || 0) - (a.play_count || 0));
+  $('catalogSortTitle').classList.toggle('active', catalogSort !== 'popular');
+  $('catalogSortPopular').classList.toggle('active', catalogSort === 'popular');
   $('catalogCount').textContent = `顯示 ${songs.length} 首`;
   const grid = $('catalogGrid');
   grid.replaceChildren();
@@ -371,6 +386,7 @@ function renderCatalog() {
     image.referrerPolicy = 'no-referrer';
     const body = el('div', 'catalog-song-body');
     body.append(el('div', 'catalog-song-title', song.title));
+    if (song.play_count) body.append(el('div', 'catalog-song-plays', `唱過 ${song.play_count} 次`));
     const actions = el('div', 'catalog-song-actions');
     actions.append(button('點歌', 'catalog-primary', () => queueSong(song.id, 'end')), button('插播', 'catalog-secondary', () => queueSong(song.id, 'next')));
     body.append(actions);
@@ -391,6 +407,76 @@ async function loadCatalog(force = false) {
     toast(error.message);
   }
 }
+function setCatalogSort(sort) {
+  catalogSort = sort;
+  try { localStorage.setItem('ktv-catalog-sort', sort); } catch { /* optional */ }
+  if (catalogStale) { catalogStale = false; loadCatalog(true); } else renderCatalog();
+}
+
+// ---- Singing history ----
+let historyTab = 'nights';
+let historyData = null;
+let historyKey; // undefined until the first state load, so history always loads once
+
+function historyTime(value) {
+  const date = new Date(`${value.replace(' ', 'T')}Z`);
+  return date.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+function nightLabel(value) {
+  const [year, month, day] = value.split('-').map(Number);
+  const weekday = '日一二三四五六'[new Date(year, month - 1, day).getDay()];
+  return `${month}/${day}（${weekday}）`;
+}
+function historyActions(seenId) {
+  const actions = el('div', 'history-actions');
+  actions.append(button('點歌', 'small-button', () => queueSong(seenId, 'end')), button('插播', 'small-button', () => queueSong(seenId, 'next')));
+  return actions;
+}
+function renderHistory() {
+  $('historyTabNights').classList.toggle('active', historyTab === 'nights');
+  $('historyTabPopular').classList.toggle('active', historyTab === 'popular');
+  $('historyTabNights').setAttribute('aria-selected', String(historyTab === 'nights'));
+  $('historyTabPopular').setAttribute('aria-selected', String(historyTab === 'popular'));
+  const area = $('historyBody');
+  area.replaceChildren();
+  if (!historyData) { area.append(el('div', 'queue-empty', '正在載入…')); return; }
+  if (historyTab === 'popular') {
+    if (!historyData.popular.length) { area.append(el('div', 'queue-empty', '還沒有唱完的歌，唱完一首就會出現在這裡。')); return; }
+    historyData.popular.forEach((song, index) => {
+      const row = el('div', 'queue-row history-row');
+      const info = el('div');
+      info.append(el('div', 'queue-title', song.title), el('div', 'queue-meta', `唱過 ${song.plays} 次 · 最近 ${nightLabel(song.last_night)}`));
+      row.append(el('div', 'queue-number', String(index + 1).padStart(2, '0')), info, historyActions(song.seen_id));
+      area.append(row);
+    });
+    return;
+  }
+  if (!historyData.nights.length) { area.append(el('div', 'queue-empty', '還沒有歌唱紀錄，唱完的歌會出現在這裡。')); return; }
+  historyData.nights.forEach((night, index) => {
+    const group = el('details', 'history-night');
+    group.open = index === 0;
+    group.append(el('summary', null, `${nightLabel(night.date)} · ${night.songs.length} 首`));
+    for (const song of night.songs) {
+      const row = el('div', 'queue-row history-row');
+      const info = el('div');
+      const meta = [`${song.added_by} 點播`];
+      if (song.status === 'playing') meta.push('正在唱');
+      else if (song.end_reason === 'skipped') meta.push('跳過');
+      info.append(el('div', 'queue-title', song.title), el('div', 'queue-meta', meta.join(' · ')));
+      row.append(el('div', 'history-time', historyTime(song.played_at)), info, historyActions(song.seen_id));
+      group.append(row);
+    }
+    $('historyBody').append(group);
+  });
+}
+async function loadHistory() {
+  try {
+    historyData = await api('/api/history');
+    renderHistory();
+  } catch { /* the next song change retries */ }
+}
+function setHistoryTab(tab) { historyTab = tab; renderHistory(); }
+
 function openNewSong() {
   $('newSong').hidden = false;
   $('newTitle').value = $('searchInput').value.trim();
@@ -613,7 +699,11 @@ $('importToggleAll').addEventListener('click', () => {
   for (const item of importItems) { item.checked = select && Boolean(importChoice(item)); item.check.checked = item.checked; }
   updateImportFooter();
 });
-$('nextButton').addEventListener('click', () => action('/api/next', { method: 'POST' }, '已切換到下一首'));
+$('nextButton').addEventListener('click', () => action('/api/next', { method: 'POST', body: JSON.stringify({ reason: 'skipped' }) }, '已切換到下一首'));
+$('historyTabNights').addEventListener('click', () => setHistoryTab('nights'));
+$('historyTabPopular').addEventListener('click', () => setHistoryTab('popular'));
+$('catalogSortTitle').addEventListener('click', () => setCatalogSort('title'));
+$('catalogSortPopular').addEventListener('click', () => setCatalogSort('popular'));
 $('copyButton').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('inviteUrl').value); toast('連結已複製'); } catch { $('inviteUrl').select(); toast('請複製選取的連結'); } });
 $('openQrButton').addEventListener('click', () => {
   const popup = window.open(`/qr.html?token=${encodeURIComponent(token)}`, 'ktv-qr-display', 'popup,width=760,height=900');
